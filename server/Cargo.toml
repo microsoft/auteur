@@ -1,0 +1,29 @@
+[package]
+name = "rtmp-switcher"
+version = "0.1.0"
+authors = ["Mathieu Duponchelle <mathieu@centricular.com>"]
+edition = "2018"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+gst = { version = "0.16", package = "gstreamer" }
+gst-base = { version = "0.16", package = "gstreamer-base" }
+gst-app = { version = "0.16", package = "gstreamer-app" }
+glib = "0.10"
+futures = "0.3"
+actix = "0.10"
+actix-rt = "1"
+actix-web = { version = "3", features = ["openssl"] }
+actix-web-actors = "3"
+actix-service = "1"
+actix-files = "0.4"
+actix-cors = "0.5"
+openssl = "0.10"
+log = "0.4"
+env_logger = "0.8"
+serde = "1"
+serde_json = "1"
+structopt = "0.3"
+uuid = { version = "0.8", features = ["v4"] }
+chrono = "0.4"
