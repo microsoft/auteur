@@ -2,8 +2,8 @@
 //
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
-use structopt::StructOpt;
 use std::path::PathBuf;
+use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -23,5 +23,4 @@ pub struct Config {
     /// Certificate private key file.
     #[structopt(short = "k", long)]
     pub key_file: Option<PathBuf>,
-
 }

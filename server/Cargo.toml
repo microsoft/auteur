@@ -27,3 +27,5 @@ serde_json = "1"
 structopt = "0.3"
 uuid = { version = "0.8", features = ["v4"] }
 chrono = "0.4"
+
+rtmp-switcher-controlling = { path = "../common" }

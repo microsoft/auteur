@@ -1,0 +1,9 @@
+[package]
+name = "rtmp-switcher-controller"
+version = "0.1.0"
+authors = ["Mathieu Duponchelle <mathieu@centricular.com>"]
+edition = "2018"
+license = "MIT"
+
+[dependencies]
+clap = "3.0.0-beta.2"

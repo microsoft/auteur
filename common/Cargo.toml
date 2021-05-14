@@ -1,0 +1,11 @@
+[package]
+name = "rtmp-switcher-controlling"
+version = "0.1.0"
+authors = ["Mathieu Duponchelle <mathieu@centricular.com>"]
+edition = "2018"
+license = "MIT"
+
+[dependencies]
+serde = "1"
+uuid = { version = "0.8", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }

@@ -2,36 +2,40 @@
 //
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
+use crate::channel::Channel;
 use crate::config::Config;
+use crate::controller::Controller;
 
+use actix::Addr;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use log::error;
 
 /// Create Subscriber/Publisher WebSocket actors.
 async fn ws(
     cfg: web::Data<Config>,
+    channels: web::Data<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
     path: web::Path<String>,
     req: HttpRequest,
     stream: web::Payload,
 ) -> Result<HttpResponse, actix_web::Error> {
     match path.as_str() {
         "control" => {
-            /*
-            let publisher = Publisher::new(
+            let controller = Controller::new(
                 cfg.into_inner(),
-                rooms.as_ref().clone(),
+                channels.into_inner(),
                 &req.connection_info(),
             )
             .map_err(|err| {
-                error!("Failed to create publisher: {}", err);
+                error!("Failed to create controller: {}", err);
                 HttpResponse::InternalServerError()
             })?;
 
-            ws::start(publisher, &req, stream)
-            */
-            Ok(HttpResponse::NotFound().finish())
+            ws::start(controller, &req, stream)
         }
         _ => Ok(HttpResponse::NotFound().finish()),
     }
@@ -39,8 +43,11 @@ async fn ws(
 
 /// Start the server based on the passed `Config`.
 pub async fn run(cfg: Config) -> Result<(), anyhow::Error> {
+    let channels: HashMap<uuid::Uuid, Addr<Channel>> = HashMap::new();
+    let channels = web::Data::new(Mutex::new(channels));
     let cfg = web::Data::new(cfg);
     let cfg_clone = cfg.clone();
+    let channels_clone = channels.clone();
 
     let server = HttpServer::new(move || {
         let cors = actix_cors::Cors::default().allow_any_origin().max_age(3600);
@@ -49,6 +56,7 @@ pub async fn run(cfg: Config) -> Result<(), anyhow::Error> {
             .wrap(actix_web::middleware::Logger::default())
             .wrap(cors)
             .app_data(cfg_clone.clone())
+            .app_data(channels_clone.clone())
             .route("/ws/{mode:(control)}", web::get().to(ws))
     });
 
