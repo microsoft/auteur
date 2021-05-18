@@ -17,9 +17,12 @@ use actix::{
 use actix_web::dev::ConnectionInfo;
 use actix_web_actors::ws;
 
+use chrono::{DateTime, Utc};
 use log::{debug, error, trace};
 
-use rtmp_switcher_controlling::controller::{ControllerMessage, ServerMessage};
+use rtmp_switcher_controlling::controller::{
+    ControllerCommand, ControllerMessage, ServerCommandResult, ServerMessage,
+};
 
 /// Actor that represents an application controller.
 #[derive(Debug)]
@@ -51,69 +54,146 @@ impl Controller {
 
     fn get_channel_info_future(
         &self,
+        command_id: uuid::Uuid,
         channel: Addr<Channel>,
     ) -> impl ActorFuture<Actor = Self, Output = ()> {
         async move { channel.send(crate::channel::GetInfoMessage {}).await }
             .into_actor(self)
             .then(move |res, _, ctx| {
                 ctx.text(
-                    serde_json::to_string(&res.unwrap())
-                        .expect("failed to serialize ChannelList message"),
+                    serde_json::to_string(&ServerMessage {
+                        id: Some(command_id),
+                        result: ServerCommandResult::ChannelInfo(res.unwrap()),
+                    })
+                    .expect("failed to serialize ChannelInfo message"),
                 );
                 actix::fut::ready(())
             })
+    }
+
+    fn add_source_future(
+        &self,
+        command_id: uuid::Uuid,
+        channel: Addr<Channel>,
+        uri: String,
+        cue_time: Option<DateTime<Utc>>,
+    ) -> impl ActorFuture<Actor = Self, Output = ()> {
+        async move {
+            channel
+                .send(crate::channel::AddSourceMessage { uri, cue_time })
+                .await
+        }
+        .into_actor(self)
+        .then(move |res, _, ctx| {
+            ctx.text(
+                serde_json::to_string(&ServerMessage {
+                    id: Some(command_id),
+                    result: ServerCommandResult::SourceAdded { id: res.unwrap() },
+                })
+                .expect("failed to serialize ChannelInfo message"),
+            );
+            actix::fut::ready(())
+        })
+    }
+
+    fn run_command(
+        &mut self,
+        ctx: &mut ws::WebsocketContext<Self>,
+        command_id: uuid::Uuid,
+        command: ControllerCommand,
+    ) {
+        match command {
+            ControllerCommand::StartChannel { name, destination } => {
+                let channel =
+                    Channel::new(self.cfg.clone(), self.channels.clone(), &name, &destination);
+                let id = channel.id;
+
+                self.channels.lock().unwrap().insert(id, channel.start());
+
+                ctx.text(
+                    serde_json::to_string(&ServerMessage {
+                        id: Some(command_id),
+                        result: ServerCommandResult::ChannelStarted { id },
+                    })
+                    .expect("failed to serialize ChannelStarted message"),
+                );
+            }
+            ControllerCommand::StopChannel { id } => {
+                match self.channels.lock().unwrap().remove(&id) {
+                    Some(_) => {
+                        ctx.text(
+                            serde_json::to_string(&ServerMessage {
+                                id: Some(command_id),
+                                result: ServerCommandResult::ChannelStopped { id },
+                            })
+                            .expect("failed to serialize ChannelStopped message"),
+                        );
+                    }
+                    None => {
+                        ctx.notify(ErrorMessage {
+                            msg: format!("No channel with id {:?}", id),
+                            command_id: Some(command_id),
+                        });
+                    }
+                }
+            }
+            ControllerCommand::ListChannels => {
+                ctx.text(
+                    serde_json::to_string(&ServerMessage {
+                        id: Some(command_id),
+                        result: ServerCommandResult::ChannelList {
+                            channels: self
+                                .channels
+                                .lock()
+                                .unwrap()
+                                .keys()
+                                .map(|id| id.clone())
+                                .collect(),
+                        },
+                    })
+                    .expect("failed to serialize ChannelList message"),
+                );
+            }
+            ControllerCommand::GetChannelInfo { id } => {
+                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
+                    ctx.spawn(self.get_channel_info_future(command_id, channel.clone()));
+                } else {
+                    ctx.notify(ErrorMessage {
+                        msg: format!("No channel with id {:?}", id),
+                        command_id: Some(command_id),
+                    });
+                }
+            }
+            ControllerCommand::AddSource { id, uri, cue_time } => {
+                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
+                    ctx.spawn(self.add_source_future(command_id, channel.clone(), uri, cue_time));
+                } else {
+                    ctx.notify(ErrorMessage {
+                        msg: format!("No channel with id {:?}", id),
+                        command_id: Some(command_id),
+                    });
+                }
+            }
+            _ => (),
+        }
     }
 
     /// Handle JSON messages from the controller.
     fn handle_message(&mut self, ctx: &mut ws::WebsocketContext<Self>, text: &str) {
         trace!("Handling message: {}", text);
         match serde_json::from_str::<ControllerMessage>(text) {
-            Ok(ControllerMessage::StartChannel { name, destination }) => {
-                let channel = Channel::new(self.cfg.clone(), &name, &destination);
-                let id = channel.id;
-
-                self.channels.lock().unwrap().insert(id, channel.start());
-
-                ctx.text(
-                    serde_json::to_string(&ServerMessage::ChannelStarted { id })
-                        .expect("failed to serialize ChannelStarted message"),
-                );
+            Ok(ControllerMessage { id, command }) => {
+                self.run_command(ctx, id, command);
             }
-            Ok(ControllerMessage::StopChannel { id }) => {
-                self.channels.lock().unwrap().remove(&id);
-
-                ctx.text(
-                    serde_json::to_string(&ServerMessage::ChannelStopped { id })
-                        .expect("failed to serialize ChannelStopped message"),
-                );
-            }
-            Ok(ControllerMessage::ListChannels) => {
-                ctx.text(
-                    serde_json::to_string(&ServerMessage::ChannelList {
-                        channels: self
-                            .channels
-                            .lock()
-                            .unwrap()
-                            .keys()
-                            .map(|id| id.clone())
-                            .collect(),
-                    })
-                    .expect("failed to serialize ChannelList message"),
-                );
-            }
-            Ok(ControllerMessage::GetChannelInfo { id }) => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.get_channel_info_future(channel.clone()));
-                }
-            }
-            Ok(_) => {}
             Err(err) => {
                 error!(
                     "Controller {} has websocket error: {}",
                     self.remote_addr, err
                 );
-                ctx.notify(ErrorMessage(String::from("Internal processing error")));
-                self.shutdown(ctx, false);
+                ctx.notify(ErrorMessage {
+                    msg: String::from("Internal processing error"),
+                    command_id: None,
+                });
             }
         }
     }
@@ -176,9 +256,12 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for Controller {
     }
 }
 
-/// Message to report pipeline errors to the actor.
+/// Message to report channel errors to the actor.
 #[derive(Debug)]
-struct ErrorMessage(String);
+struct ErrorMessage {
+    msg: String,
+    command_id: Option<uuid::Uuid>,
+}
 
 impl Message for ErrorMessage {
     type Result = ();
@@ -190,13 +273,15 @@ impl Handler<ErrorMessage> for Controller {
     fn handle(&mut self, msg: ErrorMessage, ctx: &mut ws::WebsocketContext<Self>) -> Self::Result {
         error!(
             "Got error message '{}' on controller {}",
-            msg.0, self.remote_addr
+            msg.msg, self.remote_addr
         );
 
         ctx.text(
-            serde_json::to_string(&ServerMessage::Error { message: msg.0 })
-                .expect("Failed to serialize error message"),
+            serde_json::to_string(&ServerMessage {
+                id: msg.command_id,
+                result: ServerCommandResult::Error { message: msg.msg },
+            })
+            .expect("Failed to serialize error message"),
         );
-        self.shutdown(ctx, false);
     }
 }

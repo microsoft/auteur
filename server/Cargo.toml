@@ -7,9 +7,8 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
-gst = { version = "0.16", package = "gstreamer" }
-gst-base = { version = "0.16", package = "gstreamer-base" }
-gst-app = { version = "0.16", package = "gstreamer-app" }
+gst = { package = "gstreamer", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs", features = ["v1_18"] }
+gst-base = { package = "gstreamer-base", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs", features = ["v1_18"] }
 glib = "0.10"
 futures = "0.3"
 actix = "0.10"
@@ -27,5 +26,6 @@ serde_json = "1"
 structopt = "0.3"
 uuid = { version = "0.8", features = ["v4"] }
 chrono = "0.4"
+priority-queue = "1.1.0"
 
 rtmp-switcher-controlling = { path = "../common" }
