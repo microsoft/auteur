@@ -34,7 +34,6 @@ struct CuedSource {
     uri: String,
     preroll_time: Option<DateTime<Utc>>,
     cue_time: DateTime<Utc>,
-    seq: u64,
 }
 
 impl Ord for CuedSource {
@@ -125,7 +124,6 @@ pub struct Channel {
     sources: PriorityQueue<uuid::Uuid, Reverse<CuedSource>>,
     pipeline: gst::Pipeline,
     schedule_handle: Option<SpawnHandle>,
-    source_seq: u64,
     current_source: Option<Source>,
     prerolled_sources: HashMap<uuid::Uuid, Source>,
 }
@@ -153,7 +151,6 @@ impl Channel {
             sources: PriorityQueue::new(),
             pipeline: gst::Pipeline::new(Some(&id.to_string())),
             schedule_handle: None,
-            source_seq: 0,
             current_source: None,
             prerolled_sources: HashMap::new(),
         }
@@ -547,11 +544,8 @@ impl Channel {
                 uri,
                 preroll_time,
                 cue_time,
-                seq: self.source_seq,
             }),
         );
-
-        self.source_seq += 1;
 
         self.schedule(ctx);
 
