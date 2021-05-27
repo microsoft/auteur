@@ -27,30 +27,26 @@ struct Source {
     n_streams: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum CuedSourceState {
+    Initial,
+    Prerolling,
+    Playing,
+}
+
 /// The scheduled sources
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CuedSource {
     id: uuid::Uuid,
     uri: String,
-    preroll_time: Option<DateTime<Utc>>,
+    next_time: DateTime<Utc>,
     cue_time: DateTime<Utc>,
+    state: CuedSourceState,
 }
 
 impl Ord for CuedSource {
     fn cmp(&self, other: &Self) -> Ordering {
-        if let Some(preroll_time) = self.preroll_time {
-            if let Some(other_preroll_time) = other.preroll_time {
-                preroll_time.cmp(&other_preroll_time)
-            } else {
-                preroll_time.cmp(&other.cue_time)
-            }
-        } else {
-            if let Some(other_preroll_time) = other.preroll_time {
-                self.cue_time.cmp(&other_preroll_time)
-            } else {
-                self.cue_time.cmp(&other.cue_time)
-            }
-        }
+        self.next_time.cmp(&other.next_time)
     }
 }
 
@@ -286,10 +282,7 @@ impl Channel {
         ctx: &mut Context<Self>,
         mut source: CuedSource,
     ) -> Result<(), Error> {
-        let prerolled_source = match self.prerolled_sources.remove(&source.id) {
-            Some(source) => source,
-            None => self.preroll_cued_source(ctx, &mut source)?,
-        };
+        let prerolled_source = self.prerolled_sources.remove(&source.id).unwrap();
 
         prerolled_source
             .fallbacksrc
@@ -307,6 +300,8 @@ impl Channel {
             true
         });
 
+        source.state = CuedSourceState::Playing;
+
         self.current_source = Some(prerolled_source);
 
         Ok(())
@@ -315,8 +310,8 @@ impl Channel {
     fn preroll_cued_source(
         &mut self,
         ctx: &mut Context<Self>,
-        source: &mut CuedSource,
-    ) -> Result<Source, Error> {
+        mut source: CuedSource,
+    ) -> Result<(), Error> {
         let bin = gst::Bin::new(None);
         let src = make("fallbacksrc", None)?;
         let _ = bin.add(&src);
@@ -428,16 +423,24 @@ impl Channel {
 
         bin.sync_state_with_parent()?;
 
-        source.preroll_time = None;
+        source.next_time = source.cue_time;
+        source.state = CuedSourceState::Prerolling;
 
-        Ok(Source {
-            fallbacksrc: src,
-            src: bin.upcast(),
-            id: source.id,
-            uri: source.uri.clone(),
-            cue_time: source.cue_time,
-            n_streams: 0,
-        })
+        self.prerolled_sources.insert(
+            source.id,
+            Source {
+                fallbacksrc: src,
+                src: bin.upcast(),
+                id: source.id,
+                uri: source.uri.clone(),
+                cue_time: source.cue_time,
+                n_streams: 0,
+            },
+        );
+
+        self.sources.push(source.id, Reverse(source));
+
+        Ok(())
     }
 
     fn schedule(&mut self, ctx: &mut Context<Self>) {
@@ -449,77 +452,52 @@ impl Channel {
 
         while let Some(next_source) = {
             if let Some((_, Reverse(first_source))) = self.sources.peek() {
-                if let Some(preroll_time) = first_source.preroll_time {
-                    let now = Utc::now();
-                    let timeout = preroll_time - now;
+                let now = Utc::now();
+                let timeout = first_source.next_time - now;
 
+                trace!(
+                    "Now is {:?}, next source time is {:?}",
+                    now,
+                    first_source.next_time
+                );
+
+                if timeout > chrono::Duration::zero() {
                     trace!(
-                        "Now is {:?}, next source preroll time is {:?}",
-                        now,
-                        preroll_time
+                        "Next source's time hasn't come, going back to sleep for {:?}",
+                        timeout
                     );
-
-                    if timeout > chrono::Duration::zero() {
-                        trace!(
-                            "Next source's preroll time hasn't come, going back to sleep for {:?}",
-                            timeout
-                        );
-                        self.schedule_handle =
-                            Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
-                                trace!("Waking up");
-                                s.schedule(ctx);
-                            }));
-                        None
-                    } else {
-                        trace!("Next source's preroll time has come");
-                        self.sources.pop()
-                    }
+                    self.schedule_handle =
+                        Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
+                            trace!("Waking up");
+                            s.schedule(ctx);
+                        }));
+                    None
                 } else {
-                    let now = Utc::now();
-                    let timeout = first_source.cue_time - now;
+                    trace!("Next source's time has come");
 
-                    trace!(
-                        "Now is {:?}, next source cue time is {:?}",
-                        now,
-                        first_source.cue_time
-                    );
-
-                    if timeout > chrono::Duration::zero() {
-                        trace!(
-                            "Next source's time hasn't come, going back to sleep for {:?}",
-                            timeout
-                        );
-                        self.schedule_handle =
-                            Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
-                                trace!("Waking up");
-                                s.schedule(ctx);
-                            }));
-                        None
-                    } else {
-                        trace!("Next source's time has come");
-
-                        if let Some(source) = self.current_source.take() {
-                            trace!("Finalizing current source");
-                            self.tear_down_source(source);
-                        }
-                        self.sources.pop()
-                    }
+                    self.sources.pop()
                 }
             } else {
                 trace!("No source cued at the time");
                 None
             }
         } {
-            let mut next_source = next_source.1 .0;
+            let next_source = next_source.1 .0;
 
-            if let Some(_) = next_source.preroll_time {
-                debug!("Next source is ready for preroll {:?}", next_source);
-                let source = self.preroll_cued_source(ctx, &mut next_source).unwrap();
-                self.prerolled_sources.insert(next_source.id, source);
-                self.sources.push(next_source.id, Reverse(next_source));
-            } else {
-                debug!("Next source is ready for playback {:?}", next_source);
-                let _ = self.play_cued_source(ctx, next_source);
+            match next_source.state {
+                CuedSourceState::Initial => {
+                    debug!("Next source is ready for preroll {:?}", next_source);
+                    self.preroll_cued_source(ctx, next_source).unwrap();
+                }
+                CuedSourceState::Prerolling => {
+                    debug!("Next source is ready for playback {:?}", next_source);
+                    if let Some(source) = self.current_source.take() {
+                        trace!("Finalizing current source");
+                        self.tear_down_source(source);
+                    }
+                    let _ = self.play_cued_source(ctx, next_source);
+                }
+                CuedSourceState::Playing => {}
             }
 
             // We dequeued a source, loop to check the next one, if any
@@ -535,15 +513,16 @@ impl Channel {
     ) -> uuid::Uuid {
         let src_id = uuid::Uuid::new_v4();
 
-        let preroll_time = Some(cue_time - chrono::Duration::seconds(10));
+        let next_time = cue_time - chrono::Duration::seconds(10);
 
         self.sources.push(
             src_id,
             Reverse(CuedSource {
                 id: src_id,
                 uri,
-                preroll_time,
+                next_time,
                 cue_time,
+                state: CuedSourceState::Initial,
             }),
         );
 
@@ -560,7 +539,7 @@ impl Channel {
     ) -> Result<(), Error> {
         if let Some((id, Reverse(mut source))) = self.sources.remove(&source_id) {
             source.cue_time = cue_time;
-            source.preroll_time = Some(cue_time - chrono::Duration::seconds(10));
+            source.next_time = cue_time - chrono::Duration::seconds(10);
 
             if let Some(prerolled_source) = self.prerolled_sources.remove(&id) {
                 self.tear_down_source(prerolled_source);
