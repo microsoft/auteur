@@ -76,7 +76,7 @@ impl Controller {
         command_id: uuid::Uuid,
         channel: Addr<Channel>,
         uri: String,
-        cue_time: Option<DateTime<Utc>>,
+        cue_time: DateTime<Utc>,
     ) -> impl ActorFuture<Actor = Self, Output = ()> {
         async move {
             channel
@@ -101,7 +101,7 @@ impl Controller {
         command_id: uuid::Uuid,
         channel: Addr<Channel>,
         source_id: uuid::Uuid,
-        cue_time: Option<DateTime<Utc>>,
+        cue_time: DateTime<Utc>,
     ) -> impl ActorFuture<Actor = Self, Output = ()> {
         async move {
             channel

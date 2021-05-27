@@ -29,18 +29,16 @@ pub enum ControllerCommand {
         id: uuid::Uuid,
         /// URI of the source
         uri: String,
-        /// When the source should be cued, if None the source will be
-        /// switched to after the last source cued on the channel is over
-        cue_time: Option<DateTime<Utc>>,
+        /// When the source should be cued
+        cue_time: DateTime<Utc>,
     },
     ModifySource {
         /// The id of the channel the source belongs to
         id: uuid::Uuid,
         /// The ID of the source to modify
         source_id: uuid::Uuid,
-        /// When the source should be cued, if None the source will be
-        /// switched to after the last source cued on the channel is over
-        cue_time: Option<DateTime<Utc>>,
+        /// The new cue time of the source
+        cue_time: DateTime<Utc>,
     },
     /// Remove a source
     RemoveSource {
@@ -68,7 +66,7 @@ pub struct ControllerMessage {
 pub struct SourceInfo {
     pub id: uuid::Uuid,
     pub uri: String,
-    pub cue_time: Option<DateTime<Utc>>,
+    pub cue_time: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

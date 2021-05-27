@@ -23,7 +23,7 @@ struct Source {
     src: gst::Element,
     id: uuid::Uuid,
     uri: String,
-    cue_time: Option<DateTime<Utc>>,
+    cue_time: DateTime<Utc>,
     n_streams: u32,
 }
 
@@ -33,7 +33,7 @@ struct CuedSource {
     id: uuid::Uuid,
     uri: String,
     preroll_time: Option<DateTime<Utc>>,
-    cue_time: Option<DateTime<Utc>>,
+    cue_time: DateTime<Utc>,
     seq: u64,
 }
 
@@ -42,22 +42,15 @@ impl Ord for CuedSource {
         if let Some(preroll_time) = self.preroll_time {
             if let Some(other_preroll_time) = other.preroll_time {
                 preroll_time.cmp(&other_preroll_time)
-            } else if let Some(other_cue_time) = other.cue_time {
-                preroll_time.cmp(&other_cue_time)
             } else {
-                Ordering::Less
-            }
-        } else if let Some(cue_time) = self.cue_time {
-            if let Some(other_preroll_time) = other.preroll_time {
-                cue_time.cmp(&other_preroll_time)
-            } else if let Some(other_cue_time) = other.cue_time {
-                cue_time.cmp(&other_cue_time)
-            } else {
-                Ordering::Less
+                preroll_time.cmp(&other.cue_time)
             }
         } else {
-            // Order sources without a cue time by insertion order
-            self.seq.cmp(&other.seq)
+            if let Some(other_preroll_time) = other.preroll_time {
+                self.cue_time.cmp(&other_preroll_time)
+            } else {
+                self.cue_time.cmp(&other.cue_time)
+            }
         }
     }
 }
@@ -484,11 +477,15 @@ impl Channel {
                         trace!("Next source's preroll time has come");
                         self.sources.pop()
                     }
-                } else if let Some(cue_time) = first_source.cue_time {
+                } else {
                     let now = Utc::now();
-                    let timeout = cue_time - now;
+                    let timeout = first_source.cue_time - now;
 
-                    trace!("Now is {:?}, next source cue time is {:?}", now, cue_time);
+                    trace!(
+                        "Now is {:?}, next source cue time is {:?}",
+                        now,
+                        first_source.cue_time
+                    );
 
                     if timeout > chrono::Duration::zero() {
                         trace!(
@@ -509,17 +506,6 @@ impl Channel {
                             self.tear_down_source(source);
                         }
                         self.sources.pop()
-                    }
-                } else {
-                    match self.current_source {
-                        Some(_) => {
-                            trace!("Current source still active");
-                            None
-                        }
-                        None => {
-                            trace!("No source currently playing, dequeuing");
-                            self.sources.pop()
-                        }
                     }
                 }
             } else {
@@ -548,11 +534,11 @@ impl Channel {
         &mut self,
         ctx: &mut Context<Self>,
         uri: String,
-        cue_time: Option<DateTime<Utc>>,
+        cue_time: DateTime<Utc>,
     ) -> uuid::Uuid {
         let src_id = uuid::Uuid::new_v4();
 
-        let preroll_time = cue_time.map(|cue_time| cue_time - chrono::Duration::seconds(10));
+        let preroll_time = Some(cue_time - chrono::Duration::seconds(10));
 
         self.sources.push(
             src_id,
@@ -576,10 +562,16 @@ impl Channel {
         &mut self,
         ctx: &mut Context<Self>,
         source_id: uuid::Uuid,
-        cue_time: Option<DateTime<Utc>>,
+        cue_time: DateTime<Utc>,
     ) -> Result<(), Error> {
         if let Some((id, Reverse(mut source))) = self.sources.remove(&source_id) {
             source.cue_time = cue_time;
+            source.preroll_time = Some(cue_time - chrono::Duration::seconds(10));
+
+            if let Some(prerolled_source) = self.prerolled_sources.remove(&id) {
+                self.tear_down_source(prerolled_source);
+            }
+
             self.sources.push(id, Reverse(source));
 
             self.schedule(ctx);
@@ -595,6 +587,10 @@ impl Channel {
         ctx: &mut Context<Self>,
         source_id: uuid::Uuid,
     ) -> Result<(), Error> {
+        if let Some(prerolled_source) = self.prerolled_sources.remove(&source_id) {
+            self.tear_down_source(prerolled_source);
+        }
+
         if let Some(_) = self.sources.remove(&source_id) {
             self.schedule(ctx);
 
@@ -797,7 +793,7 @@ impl Handler<GetInfoMessage> for Channel {
 #[derive(Debug)]
 pub struct AddSourceMessage {
     pub uri: String,
-    pub cue_time: Option<DateTime<Utc>>,
+    pub cue_time: DateTime<Utc>,
 }
 
 impl Message for AddSourceMessage {
@@ -815,7 +811,7 @@ impl Handler<AddSourceMessage> for Channel {
 #[derive(Debug)]
 pub struct ModifySourceMessage {
     pub id: uuid::Uuid,
-    pub cue_time: Option<DateTime<Utc>>,
+    pub cue_time: DateTime<Utc>,
 }
 
 impl Message for ModifySourceMessage {
