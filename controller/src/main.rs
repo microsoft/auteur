@@ -110,9 +110,15 @@ fn main() -> Result<(), Error> {
                 ChannelSubCommand::Cue { id, uri, cue_time } => {
                     ControllerCommand::AddSource { id, uri, cue_time }
                 }
-                ChannelSubCommand::Modify { id, source_id, cue_time } => {
-                    ControllerCommand::ModifySource { id, source_id, cue_time }
-                }
+                ChannelSubCommand::Modify {
+                    id,
+                    source_id,
+                    cue_time,
+                } => ControllerCommand::ModifySource {
+                    id,
+                    source_id,
+                    cue_time,
+                },
                 ChannelSubCommand::Remove { id, source_id } => {
                     ControllerCommand::RemoveSource { id, source_id }
                 }

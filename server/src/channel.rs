@@ -9,7 +9,7 @@ use futures::prelude::*;
 use gst::prelude::*;
 use log::{debug, error, info, trace};
 use priority_queue::PriorityQueue;
-use rtmp_switcher_controlling::controller::{ChannelInfo, ControllerCommand};
+use rtmp_switcher_controlling::controller::{ChannelInfo, ControllerCommand, SourceInfo};
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -50,6 +50,8 @@ impl PartialOrd for CuedSource {
 struct Source {
     src: gst::Element,
     id: uuid::Uuid,
+    uri: String,
+    cue_time: Option<DateTime<Utc>>,
     n_streams: u32,
 }
 
@@ -340,6 +342,8 @@ impl Channel {
         self.current_source = Some(Source {
             src: bin.upcast(),
             id: source.id,
+            uri: source.uri,
+            cue_time: source.cue_time,
             n_streams: 0,
         });
 
@@ -440,10 +444,7 @@ impl Channel {
     ) -> Result<(), Error> {
         if let Some((id, Reverse(mut source))) = self.sources.remove(&source_id) {
             source.cue_time = cue_time;
-            self.sources.push(
-                id,
-                Reverse(source)
-            );
+            self.sources.push(id, Reverse(source));
 
             self.schedule(ctx);
 
@@ -633,10 +634,26 @@ impl Handler<GetInfoMessage> for Channel {
     type Result = MessageResult<GetInfoMessage>;
 
     fn handle(&mut self, msg: GetInfoMessage, ctx: &mut Context<Self>) -> Self::Result {
+        let mut cued_sources = vec![];
+
+        for (_, Reverse(source)) in self.sources.clone().into_sorted_iter() {
+            cued_sources.push(SourceInfo {
+                id: source.id,
+                uri: source.uri.clone(),
+                cue_time: source.cue_time,
+            });
+        }
+
         MessageResult(ChannelInfo {
             id: self.id,
             name: self.name.to_string(),
             destination: self.destination.to_string(),
+            cued_sources,
+            current_source: self.current_source.as_ref().map(|source| SourceInfo {
+                id: source.id,
+                uri: source.uri.clone(),
+                cue_time: source.cue_time,
+            }),
         })
     }
 }

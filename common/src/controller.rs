@@ -65,10 +65,20 @@ pub struct ControllerMessage {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub struct SourceInfo {
+    pub id: uuid::Uuid,
+    pub uri: String,
+    pub cue_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub struct ChannelInfo {
     pub id: uuid::Uuid,
     pub name: String,
     pub destination: String,
+    pub cued_sources: Vec<SourceInfo>,
+    pub current_source: Option<SourceInfo>,
 }
 
 /// Messages sent from the the server to the controller.

@@ -105,7 +105,10 @@ impl Controller {
     ) -> impl ActorFuture<Actor = Self, Output = ()> {
         async move {
             channel
-                .send(crate::channel::ModifySourceMessage { id: source_id, cue_time })
+                .send(crate::channel::ModifySourceMessage {
+                    id: source_id,
+                    cue_time,
+                })
                 .await
         }
         .into_actor(self)
@@ -243,9 +246,18 @@ impl Controller {
                     });
                 }
             }
-            ControllerCommand::ModifySource { id, source_id, cue_time } => {
+            ControllerCommand::ModifySource {
+                id,
+                source_id,
+                cue_time,
+            } => {
                 if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.modify_source_future(command_id, channel.clone(), source_id, cue_time));
+                    ctx.spawn(self.modify_source_future(
+                        command_id,
+                        channel.clone(),
+                        source_id,
+                        cue_time,
+                    ));
                 } else {
                     ctx.notify(ErrorMessage {
                         msg: format!("No channel with id {:?}", id),
