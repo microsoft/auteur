@@ -31,6 +31,15 @@ pub enum ControllerCommand {
         uri: String,
         /// When the source should be cued
         cue_time: DateTime<Utc>,
+        /// Until when the source should play back. If None, playback will
+        /// continue until either:
+        ///
+        /// * the underlying media goes EOS
+        /// * the source is removed
+        /// * a new end time provided with ModifySource
+        ///
+        /// end_time <= cue_time is silently ignored
+        end_time: Option<DateTime<Utc>>,
     },
     ModifySource {
         /// The id of the channel the source belongs to

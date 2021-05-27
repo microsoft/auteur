@@ -63,6 +63,8 @@ enum ChannelSubCommand {
         uri: String,
         /// When to cue the source
         cue_time: DateTime<Utc>,
+        /// When to stop the source.
+        end_time: Option<DateTime<Utc>>,
     },
     /// Modify the cue time of a source. If the source is already playing, this has no effect
     Modify {
@@ -107,9 +109,17 @@ fn main() -> Result<(), Error> {
                 }
                 ChannelSubCommand::Stop { id } => ControllerCommand::StopChannel { id },
                 ChannelSubCommand::Show { id } => ControllerCommand::GetChannelInfo { id },
-                ChannelSubCommand::Cue { id, uri, cue_time } => {
-                    ControllerCommand::AddSource { id, uri, cue_time }
-                }
+                ChannelSubCommand::Cue {
+                    id,
+                    uri,
+                    cue_time,
+                    end_time,
+                } => ControllerCommand::AddSource {
+                    id,
+                    uri,
+                    cue_time,
+                    end_time,
+                },
                 ChannelSubCommand::Modify {
                     id,
                     source_id,

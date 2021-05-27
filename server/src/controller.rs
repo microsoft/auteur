@@ -77,21 +77,36 @@ impl Controller {
         channel: Addr<Channel>,
         uri: String,
         cue_time: DateTime<Utc>,
+        end_time: Option<DateTime<Utc>>,
     ) -> impl ActorFuture<Actor = Self, Output = ()> {
         async move {
             channel
-                .send(crate::channel::AddSourceMessage { uri, cue_time })
+                .send(crate::channel::AddSourceMessage {
+                    uri,
+                    cue_time,
+                    end_time,
+                })
                 .await
         }
         .into_actor(self)
         .then(move |res, _, ctx| {
-            ctx.text(
-                serde_json::to_string(&ServerMessage {
-                    id: Some(command_id),
-                    result: ServerCommandResult::SourceAdded { id: res.unwrap() },
-                })
-                .expect("failed to serialize SourceAdded message"),
-            );
+            match res.unwrap() {
+                Ok(id) => {
+                    ctx.text(
+                        serde_json::to_string(&ServerMessage {
+                            id: Some(command_id),
+                            result: ServerCommandResult::SourceAdded { id },
+                        })
+                        .expect("failed to serialize SourceAdded message"),
+                    );
+                }
+                Err(err) => {
+                    ctx.notify(ErrorMessage {
+                        msg: format!("Failed to add source: {:?}", err),
+                        command_id: Some(command_id),
+                    });
+                }
+            }
             actix::fut::ready(())
         })
     }
@@ -236,9 +251,20 @@ impl Controller {
                     });
                 }
             }
-            ControllerCommand::AddSource { id, uri, cue_time } => {
+            ControllerCommand::AddSource {
+                id,
+                uri,
+                cue_time,
+                end_time,
+            } => {
                 if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.add_source_future(command_id, channel.clone(), uri, cue_time));
+                    ctx.spawn(self.add_source_future(
+                        command_id,
+                        channel.clone(),
+                        uri,
+                        cue_time,
+                        end_time,
+                    ));
                 } else {
                     ctx.notify(ErrorMessage {
                         msg: format!("No channel with id {:?}", id),
