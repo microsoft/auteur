@@ -7,6 +7,7 @@ use anyhow::{anyhow, Error};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::prelude::*;
 use gst::prelude::*;
+use gst::tags::Date;
 use log::{debug, error, info, trace};
 use priority_queue::PriorityQueue;
 use rtmp_switcher_controlling::controller::{ChannelInfo, ControllerCommand, SourceInfo};
@@ -16,19 +17,40 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
 
+#[derive(Debug)]
+struct Source {
+    fallbacksrc: gst::Element,
+    src: gst::Element,
+    id: uuid::Uuid,
+    uri: String,
+    cue_time: Option<DateTime<Utc>>,
+    n_streams: u32,
+}
+
 /// The scheduled sources
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CuedSource {
     id: uuid::Uuid,
     uri: String,
+    preroll_time: Option<DateTime<Utc>>,
     cue_time: Option<DateTime<Utc>>,
     seq: u64,
 }
 
 impl Ord for CuedSource {
     fn cmp(&self, other: &Self) -> Ordering {
-        if let Some(cue_time) = self.cue_time {
-            if let Some(other_cue_time) = other.cue_time {
+        if let Some(preroll_time) = self.preroll_time {
+            if let Some(other_preroll_time) = other.preroll_time {
+                preroll_time.cmp(&other_preroll_time)
+            } else if let Some(other_cue_time) = other.cue_time {
+                preroll_time.cmp(&other_cue_time)
+            } else {
+                Ordering::Less
+            }
+        } else if let Some(cue_time) = self.cue_time {
+            if let Some(other_preroll_time) = other.preroll_time {
+                cue_time.cmp(&other_preroll_time)
+            } else if let Some(other_cue_time) = other.cue_time {
                 cue_time.cmp(&other_cue_time)
             } else {
                 Ordering::Less
@@ -44,15 +66,6 @@ impl PartialOrd for CuedSource {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
-}
-
-#[derive(Debug)]
-struct Source {
-    src: gst::Element,
-    id: uuid::Uuid,
-    uri: String,
-    cue_time: Option<DateTime<Utc>>,
-    n_streams: u32,
 }
 
 #[derive(Debug)]
@@ -87,6 +100,7 @@ struct StreamMessage {
     starting: bool,
     mixer: gst::Element,
     mixer_sinkpad: gst::Pad,
+    source_id: uuid::Uuid,
 }
 
 impl Message for StreamMessage {
@@ -97,7 +111,13 @@ impl Handler<StreamMessage> for Channel {
     type Result = ();
 
     fn handle(&mut self, msg: StreamMessage, ctx: &mut Context<Self>) {
-        self.handle_source_stream_change(ctx, msg.starting, msg.mixer, msg.mixer_sinkpad);
+        self.handle_source_stream_change(
+            ctx,
+            msg.starting,
+            msg.mixer,
+            msg.mixer_sinkpad,
+            msg.source_id,
+        );
     }
 }
 
@@ -114,6 +134,7 @@ pub struct Channel {
     schedule_handle: Option<SpawnHandle>,
     source_seq: u64,
     current_source: Option<Source>,
+    prerolled_sources: HashMap<uuid::Uuid, Source>,
 }
 
 fn make(element: &str, name: Option<&str>) -> Result<gst::Element, Error> {
@@ -141,6 +162,7 @@ impl Channel {
             schedule_handle: None,
             source_seq: 0,
             current_source: None,
+            prerolled_sources: HashMap::new(),
         }
     }
 
@@ -181,14 +203,43 @@ impl Channel {
         starting: bool,
         mixer: gst::Element,
         mixer_sinkpad: gst::Pad,
+        source_id: uuid::Uuid,
     ) {
         if starting {
             debug!(
-                "Stream starting for current source, activating {:?}",
-                mixer_sinkpad
+                "Stream starting for source with id {}, potentially activating {:?}",
+                source_id, mixer_sinkpad
             );
 
-            if let Some(source) = self.current_source.as_mut() {
+            if mixer_sinkpad.has_property("alpha", None) {
+                if let Some(current_source) = self.current_source.as_ref() {
+                    if source_id == current_source.id {
+                        mixer_sinkpad.set_property("alpha", &1.).unwrap();
+                    } else {
+                        mixer_sinkpad.set_property("alpha", &0.).unwrap();
+                    }
+                } else {
+                    mixer_sinkpad.set_property("alpha", &0.).unwrap();
+                }
+            } else {
+                if let Some(current_source) = self.current_source.as_ref() {
+                    if source_id == current_source.id {
+                        mixer_sinkpad.set_property("volume", &1.).unwrap();
+                    } else {
+                        mixer_sinkpad.set_property("volume", &0.).unwrap();
+                    }
+                } else {
+                    mixer_sinkpad.set_property("volume", &0.).unwrap();
+                }
+            }
+
+            if let Some(source) = self.prerolled_sources.get_mut(&source_id) {
+                source.n_streams += 1;
+                trace!(
+                    "Prerolling source now has {} streams ready",
+                    source.n_streams
+                );
+            } else if let Some(source) = self.current_source.as_mut() {
                 source.n_streams += 1;
                 trace!(
                     "Current source now has {} streams running",
@@ -197,8 +248,8 @@ impl Channel {
             }
         } else {
             debug!(
-                "Stream stopped for current source, deactivating {:?}",
-                mixer_sinkpad
+                "Stream stopped for source with id {}, deactivating {:?}",
+                source_id, mixer_sinkpad
             );
 
             if mixer_sinkpad.has_property("alpha", None) {
@@ -209,7 +260,20 @@ impl Channel {
 
             mixer.remove_pad(&mixer_sinkpad).unwrap();
 
-            if let Some(mut source) = self.current_source.take() {
+            if let Some(mut source) = self.prerolled_sources.remove(&source_id) {
+                source.n_streams -= 1;
+
+                trace!(
+                    "Prerolling source now has {} streams running",
+                    source.n_streams
+                );
+
+                if source.n_streams == 0 {
+                    self.tear_down_source(source);
+                } else {
+                    self.prerolled_sources.insert(source_id, source);
+                }
+            } else if let Some(mut source) = self.current_source.take() {
                 source.n_streams -= 1;
 
                 trace!(
@@ -230,17 +294,50 @@ impl Channel {
     fn play_cued_source(
         &mut self,
         ctx: &mut Context<Self>,
-        source: CuedSource,
+        mut source: CuedSource,
     ) -> Result<(), Error> {
+        let prerolled_source = match self.prerolled_sources.remove(&source.id) {
+            Some(source) => source,
+            None => self.preroll_cued_source(ctx, &mut source)?,
+        };
+
+        prerolled_source
+            .fallbacksrc
+            .emit_by_name("unblock", &[])
+            .unwrap();
+
+        prerolled_source.src.foreach_src_pad(|_, pad| {
+            if let Some(peer) = pad.peer() {
+                if peer.has_property("alpha", None) {
+                    peer.set_property("alpha", &1.).unwrap();
+                } else {
+                    peer.set_property("volume", &1.).unwrap();
+                }
+            }
+            true
+        });
+
+        self.current_source = Some(prerolled_source);
+
+        Ok(())
+    }
+
+    fn preroll_cued_source(
+        &mut self,
+        ctx: &mut Context<Self>,
+        source: &mut CuedSource,
+    ) -> Result<Source, Error> {
         let bin = gst::Bin::new(None);
         let src = make("fallbacksrc", None)?;
         let _ = bin.add(&src);
 
         src.set_property("uri", &source.uri).unwrap();
+        src.set_property("manual-unblock", &true).unwrap();
 
         let pipeline_clone = self.pipeline.downgrade();
         let bin_clone = bin.clone();
         let addr = ctx.address();
+        let source_id = source.id;
         src.connect_pad_added(move |src, pad| {
             if let Some(pipeline) = pipeline_clone.upgrade() {
                 let is_video = pad.name() == "video";
@@ -316,6 +413,7 @@ impl Channel {
                                 starting: false,
                                 mixer: mixer_clone.clone(),
                                 mixer_sinkpad: mixer_sinkpad_clone.clone(),
+                                source_id,
                             });
                             gst::PadProbeReturn::Drop
                         }
@@ -331,6 +429,7 @@ impl Channel {
                     starting: true,
                     mixer,
                     mixer_sinkpad,
+                    source_id,
                 });
             }
         });
@@ -339,15 +438,16 @@ impl Channel {
 
         bin.sync_state_with_parent()?;
 
-        self.current_source = Some(Source {
+        source.preroll_time = None;
+
+        Ok(Source {
+            fallbacksrc: src,
             src: bin.upcast(),
             id: source.id,
-            uri: source.uri,
+            uri: source.uri.clone(),
             cue_time: source.cue_time,
             n_streams: 0,
-        });
-
-        Ok(())
+        })
     }
 
     fn schedule(&mut self, ctx: &mut Context<Self>) {
@@ -357,9 +457,34 @@ impl Channel {
             ctx.cancel_future(handle);
         }
 
-        if let Some(next_source) = {
+        while let Some(next_source) = {
             if let Some((_, Reverse(first_source))) = self.sources.peek() {
-                if let Some(cue_time) = first_source.cue_time {
+                if let Some(preroll_time) = first_source.preroll_time {
+                    let now = Utc::now();
+                    let timeout = preroll_time - now;
+
+                    trace!(
+                        "Now is {:?}, next source preroll time is {:?}",
+                        now,
+                        preroll_time
+                    );
+
+                    if timeout > chrono::Duration::zero() {
+                        trace!(
+                            "Next source's preroll time hasn't come, going back to sleep for {:?}",
+                            timeout
+                        );
+                        self.schedule_handle =
+                            Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
+                                trace!("Waking up");
+                                s.schedule(ctx);
+                            }));
+                        None
+                    } else {
+                        trace!("Next source's preroll time has come");
+                        self.sources.pop()
+                    }
+                } else if let Some(cue_time) = first_source.cue_time {
                     let now = Utc::now();
                     let timeout = cue_time - now;
 
@@ -402,9 +527,17 @@ impl Channel {
                 None
             }
         } {
-            debug!("Next source is ready for playback {:?}", next_source);
-            // TODO use result
-            let _ = self.play_cued_source(ctx, next_source.1 .0);
+            let mut next_source = next_source.1 .0;
+
+            if let Some(_) = next_source.preroll_time {
+                debug!("Next source is ready for preroll {:?}", next_source);
+                let source = self.preroll_cued_source(ctx, &mut next_source).unwrap();
+                self.prerolled_sources.insert(next_source.id, source);
+                self.sources.push(next_source.id, Reverse(next_source));
+            } else {
+                debug!("Next source is ready for playback {:?}", next_source);
+                let _ = self.play_cued_source(ctx, next_source);
+            }
 
             // We dequeued a source, loop to check the next one, if any
             self.schedule(ctx);
@@ -419,11 +552,14 @@ impl Channel {
     ) -> uuid::Uuid {
         let src_id = uuid::Uuid::new_v4();
 
+        let preroll_time = cue_time.map(|cue_time| cue_time - chrono::Duration::seconds(10));
+
         self.sources.push(
             src_id,
             Reverse(CuedSource {
                 id: src_id,
                 uri,
+                preroll_time,
                 cue_time,
                 seq: self.source_seq,
             }),
