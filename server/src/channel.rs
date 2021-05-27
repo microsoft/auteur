@@ -269,7 +269,6 @@ impl Channel {
 
                 if source.n_streams == 0 {
                     self.tear_down_source(source);
-                    self.schedule(ctx);
                 } else {
                     self.current_source = Some(source);
                 }
