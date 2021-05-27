@@ -34,22 +34,20 @@ pub enum ControllerCommand {
         cue_time: Option<DateTime<Utc>>,
     },
     ModifySource {
-        /// The ID of the source to modify
+        /// The id of the channel the source belongs to
         id: uuid::Uuid,
+        /// The ID of the source to modify
+        source_id: uuid::Uuid,
         /// When the source should be cued, if None the source will be
         /// switched to after the last source cued on the channel is over
         cue_time: Option<DateTime<Utc>>,
     },
-    /// Immediately switch to a source
-    SwitchSource {
-        /// The ID of the source to switch to. All previous sources
-        /// on that channel are discarded
-        id: uuid::Uuid,
-    },
     /// Remove a source
     RemoveSource {
-        /// The ID of the source to remove
+        /// The id of the channel the source belongs to
         id: uuid::Uuid,
+        /// The ID of the source to remove
+        source_id: uuid::Uuid,
     },
     /// List all channel IDs
     ListChannels,
@@ -83,6 +81,8 @@ pub enum ServerCommandResult {
     ChannelStopped { id: uuid::Uuid },
     ChannelInfo(ChannelInfo),
     SourceAdded { id: uuid::Uuid },
+    SourceModified { id: uuid::Uuid },
+    SourceRemoved { id: uuid::Uuid },
 }
 
 /// Messages sent from the the server to the controller.

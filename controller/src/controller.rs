@@ -183,6 +183,12 @@ impl Controller {
                             ServerCommandResult::SourceAdded { id } => {
                                 println!("Added source with id {:?}", id);
                             }
+                            ServerCommandResult::SourceModified { id } => {
+                                println!("Modified source with id {:?}", id);
+                            }
+                            ServerCommandResult::SourceRemoved { id } => {
+                                println!("Removed source with id {:?}", id);
+                            }
                         }
 
                         let exit_on_response_id = exit_on_response_id_clone.lock().unwrap();

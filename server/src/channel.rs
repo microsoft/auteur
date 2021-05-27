@@ -19,6 +19,7 @@ use uuid::Uuid;
 /// The scheduled sources
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CuedSource {
+    id: uuid::Uuid,
     uri: String,
     cue_time: Option<DateTime<Utc>>,
     seq: u64,
@@ -48,6 +49,7 @@ impl PartialOrd for CuedSource {
 #[derive(Debug)]
 struct Source {
     src: gst::Element,
+    id: uuid::Uuid,
     n_streams: u32,
 }
 
@@ -337,6 +339,7 @@ impl Channel {
 
         self.current_source = Some(Source {
             src: bin.upcast(),
+            id: source.id,
             n_streams: 0,
         });
 
@@ -415,6 +418,7 @@ impl Channel {
         self.sources.push(
             src_id,
             Reverse(CuedSource {
+                id: src_id,
                 uri,
                 cue_time,
                 seq: self.source_seq,
@@ -426,6 +430,50 @@ impl Channel {
         self.schedule(ctx);
 
         src_id
+    }
+
+    fn modify_source(
+        &mut self,
+        ctx: &mut Context<Self>,
+        source_id: uuid::Uuid,
+        cue_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        if let Some((id, Reverse(mut source))) = self.sources.remove(&source_id) {
+            source.cue_time = cue_time;
+            self.sources.push(
+                id,
+                Reverse(source)
+            );
+
+            self.schedule(ctx);
+
+            Ok(())
+        } else {
+            Err(anyhow!("no source with id {}", source_id))
+        }
+    }
+
+    fn remove_source(
+        &mut self,
+        ctx: &mut Context<Self>,
+        source_id: uuid::Uuid,
+    ) -> Result<(), Error> {
+        if let Some(_) = self.sources.remove(&source_id) {
+            self.schedule(ctx);
+
+            Ok(())
+        } else if let Some(source) = self.current_source.take() {
+            if source.id == source_id {
+                self.tear_down_source(source);
+                self.schedule(ctx);
+                Ok(())
+            } else {
+                self.current_source = Some(source);
+                Err(anyhow!("no source with id {}", source_id))
+            }
+        } else {
+            Err(anyhow!("no source with id {}", source_id))
+        }
     }
 
     fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
@@ -608,5 +656,40 @@ impl Handler<AddSourceMessage> for Channel {
 
     fn handle(&mut self, msg: AddSourceMessage, ctx: &mut Context<Self>) -> Self::Result {
         MessageResult(self.add_source(ctx, msg.uri, msg.cue_time))
+    }
+}
+
+#[derive(Debug)]
+pub struct ModifySourceMessage {
+    pub id: uuid::Uuid,
+    pub cue_time: Option<DateTime<Utc>>,
+}
+
+impl Message for ModifySourceMessage {
+    type Result = Result<(), Error>;
+}
+
+impl Handler<ModifySourceMessage> for Channel {
+    type Result = MessageResult<ModifySourceMessage>;
+
+    fn handle(&mut self, msg: ModifySourceMessage, ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.modify_source(ctx, msg.id, msg.cue_time))
+    }
+}
+
+#[derive(Debug)]
+pub struct RemoveSourceMessage {
+    pub id: uuid::Uuid,
+}
+
+impl Message for RemoveSourceMessage {
+    type Result = Result<(), Error>;
+}
+
+impl Handler<RemoveSourceMessage> for Channel {
+    type Result = MessageResult<RemoveSourceMessage>;
+
+    fn handle(&mut self, msg: RemoveSourceMessage, ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.remove_source(ctx, msg.id))
     }
 }
