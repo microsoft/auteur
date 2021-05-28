@@ -38,7 +38,7 @@ pub enum ControllerCommand {
         /// * the source is removed
         /// * a new end time provided with ModifySource
         ///
-        /// end_time <= cue_time is silently ignored
+        /// end_time <= cue_time is considered an error
         end_time: Option<DateTime<Utc>>,
     },
     ModifySource {
@@ -70,12 +70,22 @@ pub struct ControllerMessage {
     pub command: ControllerCommand,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SourceStatus {
+    Initial,
+    Prerolling,
+    Playing,
+    Stopped,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct SourceInfo {
     pub id: uuid::Uuid,
     pub uri: String,
     pub cue_time: DateTime<Utc>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub status: SourceStatus,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -84,8 +94,7 @@ pub struct ChannelInfo {
     pub id: uuid::Uuid,
     pub name: String,
     pub destination: String,
-    pub cued_sources: Vec<SourceInfo>,
-    pub current_source: Option<SourceInfo>,
+    pub sources: Vec<SourceInfo>,
 }
 
 /// Messages sent from the the server to the controller.

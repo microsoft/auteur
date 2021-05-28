@@ -167,25 +167,19 @@ impl Controller {
                                     "Channel {} has id {:?} and destination {}",
                                     info.name, info.id, info.destination
                                 );
-                                if info.cued_sources.is_empty() {
+                                if info.sources.is_empty() {
                                     println!("  - no cued sources");
                                 } else {
                                     println!("  - cued sources:");
-                                    for source_info in &info.cued_sources {
+                                    for source_info in &info.sources {
                                         println!(
-                                            "    * {} with uri {} and cue time: {:?}",
-                                            source_info.id, source_info.uri, source_info.cue_time
+                                            "    * {} with uri {} and cue time: {:?}, status: {:?}",
+                                            source_info.id,
+                                            source_info.uri,
+                                            source_info.cue_time,
+                                            source_info.status,
                                         );
                                     }
-                                }
-                                if let Some(source_info) = info.current_source {
-                                    println!("  - currently playing source:");
-                                    println!(
-                                        "    * {} with uri {} and cue time: {:?}",
-                                        source_info.id, source_info.uri, source_info.cue_time
-                                    );
-                                } else {
-                                    println!("  - no source playing currently");
                                 }
                             }
                             ServerCommandResult::ChannelStarted { id } => {
