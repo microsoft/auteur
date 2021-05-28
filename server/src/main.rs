@@ -6,6 +6,7 @@ mod channel;
 mod config;
 mod controller;
 mod server;
+mod utils;
 
 use anyhow::Error;
 use structopt::StructOpt;

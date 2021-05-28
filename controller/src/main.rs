@@ -10,7 +10,7 @@ use std::path::PathBuf;
 mod controller;
 use controller::Controller;
 
-use rtmp_switcher_controlling::controller::ControllerCommand;
+use rtmp_switcher_controlling::controller::{ControllerCommand, DestinationFamily};
 
 #[derive(Clap, Debug)]
 #[clap(author = "Mathieu Duponchelle <mathieu@centricular.com>")]
@@ -34,6 +34,16 @@ enum SubCommand {
         #[clap(subcommand)]
         subcmd: ChannelSubCommand,
     },
+    /// Control sources
+    Source {
+        #[clap(subcommand)]
+        subcmd: SourceSubCommand,
+    },
+    /// Control destinations
+    Destination {
+        #[clap(subcommand)]
+        subcmd: DestinationSubCommand,
+    },
 }
 
 #[derive(Clap, Debug)]
@@ -42,8 +52,6 @@ enum ChannelSubCommand {
     Start {
         /// The name of the new channel
         name: String,
-        /// The destination URI of the channel
-        destination: String,
     },
     /// Stop a channel
     Stop {
@@ -55,6 +63,9 @@ enum ChannelSubCommand {
         /// The id of an existing channel
         id: uuid::Uuid,
     },
+}
+#[derive(Clap, Debug)]
+enum SourceSubCommand {
     /// Cue a source for playback
     Cue {
         /// The id of an existing channel
@@ -88,6 +99,42 @@ enum ChannelSubCommand {
     },
 }
 
+#[derive(Clap, Debug)]
+enum DestinationSubCommand {
+    /// Cue a destination for streaming
+    Cue {
+        /// The id of an existing channel
+        id: uuid::Uuid,
+        /// The URI of the RTMP destination
+        // TODO: make it family somehow
+        uri: String,
+        /// When to cue the destination
+        cue_time: DateTime<Utc>,
+        /// When to stop the destination.
+        end_time: Option<DateTime<Utc>>,
+    },
+    /// Modify the cue time of a destination. If the destination is already streaming, this has no effect
+    Modify {
+        /// The id of an existing channel
+        id: uuid::Uuid,
+        /// The id of an existing destination cued in the channel
+        destination_id: uuid::Uuid,
+        /// When to cue the destination
+        #[clap(long)]
+        cue_time: Option<DateTime<Utc>>,
+        /// When to stop the destination.
+        #[clap(long)]
+        end_time: Option<DateTime<Utc>>,
+    },
+    /// Remove a destination. If the destination is currently streaming it is stopped
+    Remove {
+        /// The id of an existing channel
+        id: uuid::Uuid,
+        /// The id of an existing destination cued in the channel
+        destination_id: uuid::Uuid,
+    },
+}
+
 fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
 
@@ -108,12 +155,12 @@ fn main() -> Result<(), Error> {
         let command = match opts.subcmd {
             SubCommand::List => ControllerCommand::ListChannels {},
             SubCommand::Channel { subcmd } => match subcmd {
-                ChannelSubCommand::Start { name, destination } => {
-                    ControllerCommand::StartChannel { name, destination }
-                }
+                ChannelSubCommand::Start { name } => ControllerCommand::StartChannel { name },
                 ChannelSubCommand::Stop { id } => ControllerCommand::StopChannel { id },
                 ChannelSubCommand::Show { id } => ControllerCommand::GetChannelInfo { id },
-                ChannelSubCommand::Cue {
+            },
+            SubCommand::Source { subcmd } => match subcmd {
+                SourceSubCommand::Cue {
                     id,
                     uri,
                     cue_time,
@@ -124,7 +171,7 @@ fn main() -> Result<(), Error> {
                     cue_time,
                     end_time,
                 },
-                ChannelSubCommand::Modify {
+                SourceSubCommand::Modify {
                     id,
                     source_id,
                     cue_time,
@@ -135,8 +182,35 @@ fn main() -> Result<(), Error> {
                     cue_time,
                     end_time,
                 },
-                ChannelSubCommand::Remove { id, source_id } => {
+                SourceSubCommand::Remove { id, source_id } => {
                     ControllerCommand::RemoveSource { id, source_id }
+                }
+            },
+            SubCommand::Destination { subcmd } => match subcmd {
+                DestinationSubCommand::Cue {
+                    id,
+                    uri,
+                    cue_time,
+                    end_time,
+                } => ControllerCommand::AddDestination {
+                    id,
+                    family: DestinationFamily::RTMP { uri },
+                    cue_time,
+                    end_time,
+                },
+                DestinationSubCommand::Modify {
+                    id,
+                    destination_id,
+                    cue_time,
+                    end_time,
+                } => ControllerCommand::ModifyDestination {
+                    id,
+                    destination_id,
+                    cue_time,
+                    end_time,
+                },
+                DestinationSubCommand::Remove { id, destination_id } => {
+                    ControllerCommand::RemoveDestination { id, destination_id }
                 }
             },
         };

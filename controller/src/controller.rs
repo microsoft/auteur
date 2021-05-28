@@ -163,10 +163,7 @@ impl Controller {
                                 eprintln!("Server error: {}", message);
                             }
                             ServerCommandResult::ChannelInfo(info) => {
-                                println!(
-                                    "Channel {} has id {:?} and destination {}",
-                                    info.name, info.id, info.destination
-                                );
+                                println!("Channel {} with id {:?}", info.name, info.id);
                                 if info.sources.is_empty() {
                                     println!("  - no cued sources");
                                 } else {
@@ -178,6 +175,20 @@ impl Controller {
                                             source_info.uri,
                                             source_info.cue_time,
                                             source_info.status,
+                                        );
+                                    }
+                                }
+                                if info.destinations.is_empty() {
+                                    println!("  - no cued destinations");
+                                } else {
+                                    println!("  - cued destinations:");
+                                    for destination_info in &info.destinations {
+                                        println!(
+                                            "    * {} with family {:?} and cue time: {:?}, status: {:?}",
+                                            destination_info.id,
+                                            destination_info.family,
+                                            destination_info.cue_time,
+                                            destination_info.status,
                                         );
                                     }
                                 }
@@ -202,6 +213,15 @@ impl Controller {
                             }
                             ServerCommandResult::SourceRemoved { id } => {
                                 println!("Removed source with id {:?}", id);
+                            }
+                            ServerCommandResult::DestinationAdded { id } => {
+                                println!("Added destination with id {:?}", id);
+                            }
+                            ServerCommandResult::DestinationModified { id } => {
+                                println!("Modified destination with id {:?}", id);
+                            }
+                            ServerCommandResult::DestinationRemoved { id } => {
+                                println!("Removed destination with id {:?}", id);
                             }
                         }
 

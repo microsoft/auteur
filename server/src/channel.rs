@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::utils::StreamProducer;
 use actix::{
     Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, MessageResult, SpawnHandle,
     StreamHandler,
@@ -8,7 +9,9 @@ use chrono::{DateTime, Utc};
 use futures::prelude::*;
 use gst::prelude::*;
 use priority_queue::PriorityQueue;
-use rtmp_switcher_controlling::controller::{ChannelInfo, SourceInfo, SourceStatus};
+use rtmp_switcher_controlling::controller::{
+    ChannelInfo, DestinationFamily, DestinationInfo, DestinationStatus, SourceInfo, SourceStatus,
+};
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -37,7 +40,14 @@ struct CuedSource {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum CuedItem {
-    Source { id: uuid::Uuid, next: SourceStatus },
+    Source {
+        id: uuid::Uuid,
+        next: SourceStatus,
+    },
+    Destination {
+        id: uuid::Uuid,
+        next: DestinationStatus,
+    },
 }
 
 /// The scheduled actions
@@ -59,6 +69,24 @@ impl PartialOrd for CuedAction {
     }
 }
 
+#[derive(Debug)]
+struct ConsumerPipeline {
+    pipeline: gst::Pipeline,
+    video_appsrc: gst_app::AppSrc,
+    audio_appsrc: gst_app::AppSrc,
+}
+
+// Logical destination object
+#[derive(Debug)]
+struct CuedDestination {
+    id: uuid::Uuid,
+    family: DestinationFamily,
+    cue_time: DateTime<Utc>,
+    end_time: Option<DateTime<Utc>>,
+    status: DestinationStatus,
+    consumer: Option<ConsumerPipeline>,
+}
+
 /// Actor that represents a channel
 #[derive(Debug)]
 pub struct Channel {
@@ -66,11 +94,13 @@ pub struct Channel {
     channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
     pub id: uuid::Uuid,
     name: String,
-    destination: String,
     cued_actions: PriorityQueue<uuid::Uuid, Reverse<CuedAction>>,
     pipeline: gst::Pipeline,
     schedule_handle: Option<SpawnHandle>,
     sources: HashMap<uuid::Uuid, CuedSource>,
+    audio_producer: StreamProducer,
+    video_producer: StreamProducer,
+    destinations: HashMap<uuid::Uuid, CuedDestination>,
 }
 
 fn make(element: &str, name: Option<&str>) -> Result<gst::Element, Error> {
@@ -83,20 +113,36 @@ impl Channel {
         cfg: Arc<Config>,
         channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
         name: &str,
-        destination: &str,
     ) -> Self {
         let id = uuid::Uuid::new_v4();
+        let pipeline = gst::Pipeline::new(Some(&id.to_string()));
+
+        let audio_appsink = gst::ElementFactory::make("appsink", None)
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+
+        let video_appsink = gst::ElementFactory::make("appsink", None)
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+
+        pipeline
+            .add_many(&[&audio_appsink, &video_appsink])
+            .unwrap();
 
         Self {
             cfg,
             channels,
             id,
             name: name.to_string(),
-            destination: destination.to_string(),
             cued_actions: PriorityQueue::new(),
-            pipeline: gst::Pipeline::new(Some(&id.to_string())),
+            pipeline,
             schedule_handle: None,
             sources: HashMap::new(),
+            audio_producer: StreamProducer::from(&audio_appsink),
+            video_producer: StreamProducer::from(&video_appsink),
+            destinations: HashMap::new(),
         }
     }
 
@@ -242,6 +288,57 @@ impl Channel {
         }
 
         Ok(())
+    }
+
+    fn play_cued_destination(
+        &mut self,
+        ctx: &mut Context<Self>,
+        id: uuid::Uuid,
+    ) -> Result<(), Error> {
+        if let Some(mut destination) = self.destinations.remove(&id) {
+            match destination.family {
+                DestinationFamily::RTMP { ref uri } => {
+                    destination.consumer = Some(self.start_rtmp_consumer(ctx, uri)?);
+                }
+            }
+
+            destination.status = DestinationStatus::Streaming;
+
+            if let Some(end_time) = destination.end_time {
+                self.cued_actions.push(
+                    destination.id,
+                    Reverse(CuedAction {
+                        next_time: end_time,
+                        item: CuedItem::Destination {
+                            id: destination.id,
+                            next: DestinationStatus::Stopped,
+                        },
+                    }),
+                );
+            }
+
+            self.destinations.insert(id, destination);
+        }
+
+        Ok(())
+    }
+
+    fn tear_down_cued_destination(&mut self, id: uuid::Uuid) -> Result<(), Error> {
+        if let Some(mut destination) = self.destinations.remove(&id) {
+            debug!("Tearing down destination {}", id);
+
+            if let Some(consumer) = destination.consumer.take() {
+                self.video_producer.remove_consumer(&consumer.video_appsrc);
+                self.audio_producer.remove_consumer(&consumer.audio_appsrc);
+                let _ = consumer.pipeline.set_state(gst::State::Null);
+            }
+
+            let _ = self.cued_actions.remove(&destination.id);
+
+            Ok(())
+        } else {
+            Err(anyhow!("No destination with id {}", id))
+        }
     }
 
     fn preroll_cued_source(
@@ -435,6 +532,17 @@ impl Channel {
                     SourceStatus::Stopped => {
                         debug!("Reached end time for source {}", id);
                         let _ = self.tear_down_cued_source(id);
+                    }
+                    _ => unreachable!(),
+                },
+                CuedItem::Destination { id, next } => match next {
+                    DestinationStatus::Streaming => {
+                        debug!("Next destination is ready for streaming {}", id);
+                        self.play_cued_destination(ctx, id).unwrap();
+                    }
+                    DestinationStatus::Stopped => {
+                        debug!("Reached end time for destination {}", id);
+                        let _ = self.tear_down_cued_destination(id);
                     }
                     _ => unreachable!(),
                 },
@@ -632,25 +740,196 @@ impl Channel {
         self.tear_down_cued_source(source_id)
     }
 
-    fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        let vsrc = make("videotestsrc", None)?;
-        let vqueue = make("queue", None)?;
-        let vmixer = make("compositor", Some("compositor"))?;
-        let vident = make("identity", None)?;
-        let vconv = make("videoconvert", None)?;
-        let vdeinterlace = make("deinterlace", None)?;
-        let vscale = make("videoscale", None)?;
-        let vcapsfilter = make("capsfilter", None)?;
+    fn add_destination(
+        &mut self,
+        ctx: &mut Context<Self>,
+        family: DestinationFamily,
+        cue_time: DateTime<Utc>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<uuid::Uuid, Error> {
+        let destination_id = uuid::Uuid::new_v4();
+
+        if let Some(end_time) = end_time {
+            if end_time <= cue_time {
+                return Err(anyhow!("cue_time {} > end_time {}", cue_time, end_time));
+            }
+        }
+
+        self.destinations.insert(
+            destination_id,
+            CuedDestination {
+                id: destination_id,
+                family,
+                cue_time,
+                end_time,
+                status: DestinationStatus::Initial,
+                consumer: None,
+            },
+        );
+
+        self.cued_actions.push(
+            destination_id,
+            Reverse(CuedAction {
+                next_time: cue_time,
+                item: CuedItem::Destination {
+                    id: destination_id,
+                    next: DestinationStatus::Streaming,
+                },
+            }),
+        );
+
+        self.schedule(ctx);
+
+        Ok(destination_id)
+    }
+
+    fn modify_destination(
+        &mut self,
+        mut destination: CuedDestination,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> (Result<(), Error>, CuedDestination) {
+        if let Some(cue_time) = cue_time {
+            if let Some(end_time) = end_time {
+                if end_time <= cue_time {
+                    return (
+                        Err(anyhow!("cue_time {} > end_time {}", cue_time, end_time)),
+                        destination,
+                    );
+                }
+            } else if let Some(end_time) = destination.end_time {
+                if end_time <= cue_time {
+                    return (
+                        Err(anyhow!("cue_time {} > end_time {}", cue_time, end_time)),
+                        destination,
+                    );
+                }
+            }
+
+            match destination.status {
+                DestinationStatus::Initial => {
+                    let _ = self.cued_actions.remove(&destination.id);
+
+                    destination.cue_time = cue_time;
+
+                    self.cued_actions.push(
+                        destination.id,
+                        Reverse(CuedAction {
+                            next_time: cue_time,
+                            item: CuedItem::Destination {
+                                id: destination.id,
+                                next: DestinationStatus::Streaming,
+                            },
+                        }),
+                    );
+                }
+                DestinationStatus::Streaming | DestinationStatus::Stopped => {
+                    return (
+                        Err(anyhow!(
+                            "Cannot change cue time of destination {} as its status is {:?}",
+                            destination.id,
+                            destination.status
+                        )),
+                        destination,
+                    );
+                }
+            }
+        }
+
+        if let Some(end_time) = end_time {
+            if end_time <= destination.cue_time {
+                return (
+                    Err(anyhow!(
+                        "cue_time {} > end_time {}",
+                        destination.cue_time,
+                        end_time
+                    )),
+                    destination,
+                );
+            }
+
+            match destination.status {
+                DestinationStatus::Initial => {
+                    destination.end_time = Some(end_time);
+                }
+                DestinationStatus::Streaming => {
+                    let _ = self.cued_actions.remove(&destination.id);
+
+                    destination.end_time = Some(end_time);
+
+                    self.cued_actions.push(
+                        destination.id,
+                        Reverse(CuedAction {
+                            next_time: end_time,
+                            item: CuedItem::Destination {
+                                id: destination.id,
+                                next: DestinationStatus::Stopped,
+                            },
+                        }),
+                    );
+                }
+                DestinationStatus::Stopped => {
+                    return (
+                        Err(anyhow!(
+                            "Cannot change end time of source {} as its status is {:?}",
+                            destination.id,
+                            destination.status
+                        )),
+                        destination,
+                    );
+                }
+            }
+        }
+
+        (Ok(()), destination)
+    }
+
+    fn modify_destination_id(
+        &mut self,
+        ctx: &mut Context<Self>,
+        destination_id: uuid::Uuid,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        if let Some(destination) = self.destinations.remove(&destination_id) {
+            let (res, destination) = self.modify_destination(destination, cue_time, end_time);
+
+            self.destinations.insert(destination_id, destination);
+
+            self.schedule(ctx);
+
+            res
+        } else {
+            Err(anyhow!("No destination with id {}", destination_id))
+        }
+    }
+
+    fn remove_destination(&mut self, destination_id: uuid::Uuid) -> Result<(), Error> {
+        self.tear_down_cued_destination(destination_id)
+    }
+
+    fn start_rtmp_consumer(
+        &mut self,
+        ctx: &mut Context<Self>,
+        uri: &String,
+    ) -> Result<ConsumerPipeline, Error> {
+        let pipeline = gst::Pipeline::new(None);
+
+        let video_appsrc = gst::ElementFactory::make("appsrc", None)
+            .unwrap()
+            .downcast::<gst_app::AppSrc>()
+            .unwrap();
+        let timecodestamper = make("timecodestamper", None)?;
         let timeoverlay = make("timeoverlay", None)?;
         let venc = make("x264enc", None)?;
         let vparse = make("h264parse", None)?;
         let venc_queue = make("queue", None)?;
 
-        let asrc = make("audiotestsrc", None)?;
-        let aqueue = make("queue", None)?;
-        let amixer = make("audiomixer", Some("audiomixer"))?;
-        let aident = make("identity", None)?;
-        let acapsfilter = make("capsfilter", None)?;
+        let audio_appsrc = gst::ElementFactory::make("appsrc", None)
+            .unwrap()
+            .downcast::<gst_app::AppSrc>()
+            .unwrap();
+        let aconv = make("audioconvert", None)?;
         let aenc = make("faac", None)?;
         let aenc_queue = make("queue", None)?;
 
@@ -658,14 +937,104 @@ impl Channel {
         let mux_queue = make("queue", None)?;
         let sink = make("rtmp2sink", None)?;
 
-        vsrc.set_property("is-live", &true).unwrap();
-        vsrc.set_property_from_str("pattern", "black");
-        vmixer.set_property_from_str("background", "black");
-        vident.set_property("single-segment", &true).unwrap();
+        pipeline.add_many(&[
+            video_appsrc.upcast_ref(),
+            &timecodestamper,
+            &timeoverlay,
+            &venc,
+            &vparse,
+            &venc_queue,
+            audio_appsrc.upcast_ref(),
+            &aconv,
+            &aenc,
+            &aenc_queue,
+            &mux,
+            &mux_queue,
+            &sink,
+        ])?;
+
         venc.set_property_from_str("tune", "zerolatency");
         venc.set_property("key-int-max", &30u32).unwrap();
         vparse.set_property("config-interval", &-1i32).unwrap();
-        sink.set_property("location", &self.destination).unwrap();
+        sink.set_property("location", uri).unwrap();
+
+        mux.set_property("streamable", &true).unwrap();
+        mux.set_property("latency", &1000000000u64).unwrap();
+
+        timecodestamper.set_property_from_str("source", "rtc");
+        timeoverlay.set_property_from_str("time-mode", "time-code");
+
+        for queue in &[&venc_queue, &aenc_queue] {
+            queue
+                .set_properties(&[
+                    ("max-size-buffers", &0u32),
+                    ("max-size-bytes", &0u32),
+                    ("max-size-time", &(3 * gst::SECOND)),
+                ])
+                .unwrap();
+        }
+
+        gst::Element::link_many(&[
+            video_appsrc.upcast_ref(),
+            &timecodestamper,
+            &timeoverlay,
+            &venc,
+            &venc_queue,
+            &mux,
+            &mux_queue,
+            &sink,
+        ])?;
+
+        gst::Element::link_many(&[audio_appsrc.upcast_ref(), &aconv, &aenc, &aenc_queue, &mux])?;
+
+        let bus = pipeline.bus().expect("Pipeline with no bus");
+        let bus_stream = bus.stream();
+        Self::add_stream(bus_stream.map(BusMessage), ctx);
+
+        pipeline.use_clock(Some(&gst::SystemClock::obtain()));
+        pipeline.set_start_time(gst::CLOCK_TIME_NONE);
+        pipeline.set_base_time(gst::ClockTime::from(0));
+
+        self.video_producer.add_consumer(&video_appsrc);
+        self.audio_producer.add_consumer(&audio_appsrc);
+
+        pipeline.call_async(move |pipeline| {
+            if let Err(_) = pipeline.set_state(gst::State::Playing) {
+                error!("Failed to start consumer pipeline");
+            }
+        });
+
+        Ok(ConsumerPipeline {
+            pipeline,
+            video_appsrc,
+            audio_appsrc,
+        })
+    }
+
+    fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
+        let vsrc = make("videotestsrc", None)?;
+        let vqueue = make("queue", None)?;
+        let vmixer = make("compositor", Some("compositor"))?;
+        let vconv = make("videoconvert", None)?;
+        let vdeinterlace = make("deinterlace", None)?;
+        let vscale = make("videoscale", None)?;
+        let vcapsfilter = make("capsfilter", None)?;
+
+        let asrc = make("audiotestsrc", None)?;
+        let aqueue = make("queue", None)?;
+        let amixer = make("audiomixer", Some("audiomixer"))?;
+        let acapsfilter = make("capsfilter", None)?;
+
+        vsrc.set_property("is-live", &true).unwrap();
+        vsrc.set_property_from_str("pattern", "black");
+        vmixer.set_property_from_str("background", "black");
+        vmixer
+            .set_property(
+                "start-time-selection",
+                &gst_base::AggregatorStartTimeSelection::First,
+            )
+            .unwrap();
+
         vcapsfilter
             .set_property(
                 "caps",
@@ -683,7 +1052,12 @@ impl Channel {
             .unwrap();
         asrc.set_property("is-live", &true).unwrap();
         asrc.set_property("volume", &0.).unwrap();
-        aident.set_property("single-segment", &true).unwrap();
+        amixer
+            .set_property(
+                "start-time-selection",
+                &gst_base::AggregatorStartTimeSelection::First,
+            )
+            .unwrap();
         acapsfilter
             .set_property(
                 "caps",
@@ -694,48 +1068,30 @@ impl Channel {
                     .build(),
             )
             .unwrap();
-        mux.set_property("streamable", &true).unwrap();
-        mux.set_property("latency", &1000000000u64).unwrap();
 
         self.pipeline.add_many(&[
             &vsrc,
             &vqueue,
             &vmixer,
-            &vident,
             &vconv,
             &vdeinterlace,
             &vscale,
             &vcapsfilter,
-            &timeoverlay,
-            &venc,
-            &vparse,
-            &venc_queue,
             &asrc,
             &aqueue,
             &amixer,
             &acapsfilter,
-            &aenc,
-            &aenc_queue,
-            &mux,
-            &mux_queue,
-            &sink,
         ])?;
 
         gst::Element::link_many(&[
             &vsrc,
             &vqueue,
             &vmixer,
-            &vident,
             &vconv,
             &vdeinterlace,
             &vscale,
             &vcapsfilter,
-            &timeoverlay,
-            &venc,
-            &venc_queue,
-            &mux,
-            &mux_queue,
-            &sink,
+            self.video_producer.appsink().upcast_ref(),
         ])?;
 
         gst::Element::link_many(&[
@@ -743,15 +1099,16 @@ impl Channel {
             &aqueue,
             &amixer,
             &acapsfilter,
-            &aenc,
-            &aenc_queue,
-            &mux,
+            self.audio_producer.appsink().upcast_ref(),
         ])?;
 
         let bus = self.pipeline.bus().expect("Pipeline with no bus");
         let bus_stream = bus.stream();
         Self::add_stream(bus_stream.map(BusMessage), ctx);
 
+        self.pipeline.use_clock(Some(&gst::SystemClock::obtain()));
+        self.pipeline.set_start_time(gst::CLOCK_TIME_NONE);
+        self.pipeline.set_base_time(gst::ClockTime::from(0));
         self.pipeline.set_state(gst::State::Playing)?;
 
         Ok(())
@@ -781,6 +1138,20 @@ impl Actor for Channel {
                 self.tear_down_source(source);
             }
         }
+
+        let destinations: Vec<CuedDestination> = self
+            .destinations
+            .drain()
+            .map(|(_, destination)| destination)
+            .collect();
+        for mut destination in destinations {
+            if let Some(consumer) = destination.consumer.take() {
+                self.video_producer.remove_consumer(&consumer.video_appsrc);
+                self.audio_producer.remove_consumer(&consumer.audio_appsrc);
+                let _ = consumer.pipeline.set_state(gst::State::Null);
+            }
+        }
+
         info!("Stopped channel {}", self.id);
     }
 }
@@ -810,11 +1181,25 @@ impl Handler<GetInfoMessage> for Channel {
 
         sources.sort_by(|a, b| a.cue_time.cmp(&b.cue_time));
 
+        let mut destinations: Vec<DestinationInfo> = self
+            .destinations
+            .values()
+            .map(|destination| DestinationInfo {
+                id: destination.id,
+                family: destination.family.clone(),
+                cue_time: destination.cue_time,
+                end_time: destination.end_time,
+                status: destination.status,
+            })
+            .collect();
+
+        destinations.sort_by(|a, b| a.cue_time.cmp(&b.cue_time));
+
         MessageResult(ChannelInfo {
             id: self.id,
             name: self.name.to_string(),
-            destination: self.destination.to_string(),
             sources,
+            destinations,
         })
     }
 }
@@ -875,6 +1260,61 @@ impl Handler<RemoveSourceMessage> for Channel {
 }
 
 #[derive(Debug)]
+pub struct AddDestinationMessage {
+    pub family: DestinationFamily,
+    pub cue_time: DateTime<Utc>,
+    pub end_time: Option<DateTime<Utc>>,
+}
+
+impl Message for AddDestinationMessage {
+    type Result = Result<uuid::Uuid, Error>;
+}
+
+impl Handler<AddDestinationMessage> for Channel {
+    type Result = MessageResult<AddDestinationMessage>;
+
+    fn handle(&mut self, msg: AddDestinationMessage, ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.add_destination(ctx, msg.family, msg.cue_time, msg.end_time))
+    }
+}
+
+#[derive(Debug)]
+pub struct ModifyDestinationMessage {
+    pub id: uuid::Uuid,
+    pub cue_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+}
+
+impl Message for ModifyDestinationMessage {
+    type Result = Result<(), Error>;
+}
+
+impl Handler<ModifyDestinationMessage> for Channel {
+    type Result = MessageResult<ModifyDestinationMessage>;
+
+    fn handle(&mut self, msg: ModifyDestinationMessage, ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.modify_destination_id(ctx, msg.id, msg.cue_time, msg.end_time))
+    }
+}
+
+#[derive(Debug)]
+pub struct RemoveDestinationMessage {
+    pub id: uuid::Uuid,
+}
+
+impl Message for RemoveDestinationMessage {
+    type Result = Result<(), Error>;
+}
+
+impl Handler<RemoveDestinationMessage> for Channel {
+    type Result = MessageResult<RemoveDestinationMessage>;
+
+    fn handle(&mut self, msg: RemoveDestinationMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.remove_destination(msg.id))
+    }
+}
+
+#[derive(Debug)]
 struct BusMessage(gst::Message);
 
 impl Message for BusMessage {
@@ -886,11 +1326,22 @@ impl StreamHandler<BusMessage> for Channel {
         use gst::MessageView;
 
         match msg.0.view() {
-            MessageView::Latency(latency) => {
-                info!("The latency of the pipeline has changed: {:?}", latency);
-                self.pipeline.call_async(|pipeline| {
-                    let _ = pipeline.recalculate_latency();
-                });
+            MessageView::Latency(_) => {
+                if let Some(src) = msg.0.src() {
+                    if &src == self.pipeline.upcast_ref::<gst::Object>()
+                        || src.has_as_ancestor(&self.pipeline)
+                    {
+                        debug!("Channel updated latency");
+                        self.pipeline.call_async(|pipeline| {
+                            let _ = pipeline.recalculate_latency();
+                        });
+                    } else if let Some(bin) = src.downcast_ref::<gst::Bin>() {
+                        debug!("Consumer pipeline updated latency");
+                        bin.call_async(|pipeline| {
+                            let _ = pipeline.recalculate_latency();
+                        });
+                    }
+                }
             }
             _ => (),
         }
