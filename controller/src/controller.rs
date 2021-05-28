@@ -2,7 +2,7 @@
 //
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
-use anyhow::{bail, format_err, Context, Error};
+use anyhow::{Context, Error};
 use std::path::PathBuf;
 use std::sync::{atomic, Arc, Mutex};
 
@@ -254,7 +254,7 @@ impl Controller {
         debug!("Connecting to {}", server);
 
         // Connect to the configured server and create a room
-        let (mut ws, _) = if let Some(ref certificate_file) = certificate_file {
+        let (ws, _) = if let Some(ref certificate_file) = certificate_file {
             use openssl::ssl::{SslConnector, SslMethod};
 
             let mut builder = SslConnector::builder(SslMethod::tls())?;
@@ -289,10 +289,12 @@ impl Controller {
 
     /// Stops the controller.
     pub fn stop(&mut self) -> Result<(), Error> {
-        if !self
-            .stopped
-            .compare_and_swap(false, true, atomic::Ordering::SeqCst)
-        {
+        if let Ok(false) = self.stopped.compare_exchange(
+            false,
+            true,
+            atomic::Ordering::SeqCst,
+            atomic::Ordering::SeqCst,
+        ) {
             self.event_sender
                 .unbounded_send(ControllerEvent::Close)
                 .context("Stopping controller")

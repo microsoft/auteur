@@ -3,7 +3,7 @@
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
 use crate::channel::Channel;
-use crate::{channel::GetInfoMessage, config::Config};
+use crate::config::Config;
 
 use anyhow::{format_err, Error};
 
@@ -305,7 +305,6 @@ impl Controller {
                     });
                 }
             }
-            _ => (),
         }
     }
 
@@ -343,7 +342,7 @@ impl Actor for Controller {
     type Context = ws::WebsocketContext<Self>;
 
     /// Called once the controller is started.
-    fn started(&mut self, ctx: &mut Self::Context) {
+    fn started(&mut self, _ctx: &mut Self::Context) {
         trace!("Started controller {}", self.remote_addr);
     }
 

@@ -1,30 +1,29 @@
 use crate::config::Config;
 use actix::{
-    prelude::*, Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, MessageResult,
-    SpawnHandle, StreamHandler,
+    Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, MessageResult, SpawnHandle,
+    StreamHandler,
 };
 use anyhow::{anyhow, Error};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use futures::prelude::*;
 use gst::prelude::*;
-use gst::tags::Date;
 use log::{debug, error, info, trace};
 use priority_queue::PriorityQueue;
-use rtmp_switcher_controlling::controller::{
-    ChannelInfo, ControllerCommand, SourceInfo, SourceStatus,
-};
+use rtmp_switcher_controlling::controller::{ChannelInfo, SourceInfo, SourceStatus};
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use uuid::Uuid;
 
+// Wrapper around the actual GStreamer elements
 #[derive(Debug)]
 struct Source {
     fallbacksrc: gst::Element,
     src: gst::Element,
 }
 
+// Logical source object, tracks metadata about the source
+// and wraps an optional Source, which will only be present
+// when the status is either Prerolling or Playing
 #[derive(Debug)]
 struct CuedSource {
     id: uuid::Uuid,
@@ -57,59 +56,6 @@ impl Ord for CuedAction {
 impl PartialOrd for CuedAction {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-#[derive(Debug)]
-struct BusMessage(gst::Message);
-
-impl Message for BusMessage {
-    type Result = ();
-}
-
-impl StreamHandler<BusMessage> for Channel {
-    fn handle(&mut self, msg: BusMessage, _ctx: &mut Context<Self>) {
-        use gst::MessageView;
-
-        match msg.0.view() {
-            MessageView::Latency(latency) => {
-                info!("The latency of the pipeline has changed: {:?}", latency);
-                self.pipeline.call_async(|pipeline| {
-                    let _ = pipeline.recalculate_latency();
-                });
-            }
-            _ => (),
-        }
-    }
-
-    fn finished(&mut self, _ctx: &mut Self::Context) {
-        debug!("Finished bus messages");
-    }
-}
-
-#[derive(Debug)]
-struct StreamMessage {
-    starting: bool,
-    mixer: gst::Element,
-    mixer_sinkpad: gst::Pad,
-    source_id: uuid::Uuid,
-}
-
-impl Message for StreamMessage {
-    type Result = ();
-}
-
-impl Handler<StreamMessage> for Channel {
-    type Result = ();
-
-    fn handle(&mut self, msg: StreamMessage, ctx: &mut Context<Self>) {
-        self.handle_source_stream_change(
-            ctx,
-            msg.starting,
-            msg.mixer,
-            msg.mixer_sinkpad,
-            msg.source_id,
-        );
     }
 }
 
@@ -195,7 +141,6 @@ impl Channel {
 
     fn handle_source_stream_change(
         &mut self,
-        ctx: &mut Context<Self>,
         starting: bool,
         mixer: gst::Element,
         mixer_sinkpad: gst::Pad,
@@ -258,7 +203,7 @@ impl Channel {
         }
     }
 
-    fn play_cued_source(&mut self, ctx: &mut Context<Self>, id: uuid::Uuid) -> Result<(), Error> {
+    fn play_cued_source(&mut self, id: uuid::Uuid) -> Result<(), Error> {
         if let Some(source) = self.sources.get_mut(&id) {
             if let Some(prerolled_source) = source.source.take() {
                 prerolled_source
@@ -316,7 +261,7 @@ impl Channel {
             let bin_clone = bin.clone();
             let addr = ctx.address();
             let source_id = source.id;
-            src.connect_pad_added(move |src, pad| {
+            src.connect_pad_added(move |_src, pad| {
                 if let Some(pipeline) = pipeline_clone.upgrade() {
                     let is_video = pad.name() == "video";
 
@@ -383,7 +328,7 @@ impl Channel {
                     let addr_clone = addr.clone();
                     pad.add_probe(
                         gst::PadProbeType::EVENT_DOWNSTREAM,
-                        move |pad, info| match info.data {
+                        move |_pad, info| match info.data {
                             Some(gst::PadProbeData::Event(ref ev))
                                 if ev.type_() == gst::EventType::Eos =>
                             {
@@ -485,7 +430,7 @@ impl Channel {
                     }
                     SourceStatus::Playing => {
                         debug!("Next source is ready for playback {}", id);
-                        self.play_cued_source(ctx, id).unwrap();
+                        self.play_cued_source(id).unwrap();
                     }
                     SourceStatus::Stopped => {
                         debug!("Reached end time for source {}", id);
@@ -544,7 +489,6 @@ impl Channel {
 
     fn modify_source(
         &mut self,
-        ctx: &mut Context<Self>,
         mut source: CuedSource,
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
@@ -672,7 +616,7 @@ impl Channel {
         end_time: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
         if let Some(source) = self.sources.remove(&source_id) {
-            let (res, source) = self.modify_source(ctx, source, cue_time, end_time);
+            let (res, source) = self.modify_source(source, cue_time, end_time);
 
             self.sources.insert(source_id, source);
 
@@ -684,11 +628,7 @@ impl Channel {
         }
     }
 
-    fn remove_source(
-        &mut self,
-        ctx: &mut Context<Self>,
-        source_id: uuid::Uuid,
-    ) -> Result<(), Error> {
+    fn remove_source(&mut self, source_id: uuid::Uuid) -> Result<(), Error> {
         self.tear_down_cued_source(source_id)
     }
 
@@ -832,8 +772,14 @@ impl Actor for Channel {
     }
 
     /// Called once the channel is stopped
-    fn stopped(&mut self, ctx: &mut Self::Context) {
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
         let _ = self.channels.lock().unwrap().remove(&self.id);
+        let sources: Vec<CuedSource> = self.sources.drain().map(|(_, source)| source).collect();
+        for mut source in sources {
+            if let Some(source) = source.source.take() {
+                self.tear_down_source(source);
+            }
+        }
         info!("Stopped channel {}", self.id);
     }
 }
@@ -848,7 +794,7 @@ impl Message for GetInfoMessage {
 impl Handler<GetInfoMessage> for Channel {
     type Result = MessageResult<GetInfoMessage>;
 
-    fn handle(&mut self, msg: GetInfoMessage, ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, _msg: GetInfoMessage, _ctx: &mut Context<Self>) -> Self::Result {
         let mut sources: Vec<SourceInfo> = self
             .sources
             .values()
@@ -922,7 +868,54 @@ impl Message for RemoveSourceMessage {
 impl Handler<RemoveSourceMessage> for Channel {
     type Result = MessageResult<RemoveSourceMessage>;
 
-    fn handle(&mut self, msg: RemoveSourceMessage, ctx: &mut Context<Self>) -> Self::Result {
-        MessageResult(self.remove_source(ctx, msg.id))
+    fn handle(&mut self, msg: RemoveSourceMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.remove_source(msg.id))
+    }
+}
+
+#[derive(Debug)]
+struct BusMessage(gst::Message);
+
+impl Message for BusMessage {
+    type Result = ();
+}
+
+impl StreamHandler<BusMessage> for Channel {
+    fn handle(&mut self, msg: BusMessage, _ctx: &mut Context<Self>) {
+        use gst::MessageView;
+
+        match msg.0.view() {
+            MessageView::Latency(latency) => {
+                info!("The latency of the pipeline has changed: {:?}", latency);
+                self.pipeline.call_async(|pipeline| {
+                    let _ = pipeline.recalculate_latency();
+                });
+            }
+            _ => (),
+        }
+    }
+
+    fn finished(&mut self, _ctx: &mut Self::Context) {
+        debug!("Finished bus messages");
+    }
+}
+
+#[derive(Debug)]
+struct StreamMessage {
+    starting: bool,
+    mixer: gst::Element,
+    mixer_sinkpad: gst::Pad,
+    source_id: uuid::Uuid,
+}
+
+impl Message for StreamMessage {
+    type Result = ();
+}
+
+impl Handler<StreamMessage> for Channel {
+    type Result = ();
+
+    fn handle(&mut self, msg: StreamMessage, _ctx: &mut Context<Self>) {
+        self.handle_source_stream_change(msg.starting, msg.mixer, msg.mixer_sinkpad, msg.source_id);
     }
 }
