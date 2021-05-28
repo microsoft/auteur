@@ -13,7 +13,7 @@ use actix_web_actors::ws;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use log::error;
+use tracing::error;
 
 /// Create Subscriber/Publisher WebSocket actors.
 async fn ws(

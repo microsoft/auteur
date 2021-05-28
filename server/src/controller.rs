@@ -18,7 +18,7 @@ use actix_web::dev::ConnectionInfo;
 use actix_web_actors::ws;
 
 use chrono::{DateTime, Utc};
-use log::{debug, error, trace};
+use tracing::{debug, error, trace};
 
 use rtmp_switcher_controlling::controller::{
     ControllerCommand, ControllerMessage, ServerCommandResult, ServerMessage,

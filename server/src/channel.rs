@@ -7,12 +7,12 @@ use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use futures::prelude::*;
 use gst::prelude::*;
-use log::{debug, error, info, trace};
 use priority_queue::PriorityQueue;
 use rtmp_switcher_controlling::controller::{ChannelInfo, SourceInfo, SourceStatus};
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tracing::{debug, error, info, trace};
 
 // Wrapper around the actual GStreamer elements
 #[derive(Debug)]
