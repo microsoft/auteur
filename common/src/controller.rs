@@ -46,8 +46,12 @@ pub enum ControllerCommand {
         id: uuid::Uuid,
         /// The ID of the source to modify
         source_id: uuid::Uuid,
-        /// The new cue time of the source
-        cue_time: DateTime<Utc>,
+        /// The new cue time of the source, None leaves it
+        /// unchanged
+        cue_time: Option<DateTime<Utc>>,
+        /// The new end time of the source, None leaves it
+        /// unchanged
+        end_time: Option<DateTime<Utc>>,
     },
     /// Remove a source
     RemoveSource {

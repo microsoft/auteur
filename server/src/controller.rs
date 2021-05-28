@@ -116,13 +116,15 @@ impl Controller {
         command_id: uuid::Uuid,
         channel: Addr<Channel>,
         source_id: uuid::Uuid,
-        cue_time: DateTime<Utc>,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
     ) -> impl ActorFuture<Actor = Self, Output = ()> {
         async move {
             channel
                 .send(crate::channel::ModifySourceMessage {
                     id: source_id,
                     cue_time,
+                    end_time,
                 })
                 .await
         }
@@ -276,6 +278,7 @@ impl Controller {
                 id,
                 source_id,
                 cue_time,
+                end_time,
             } => {
                 if let Some(channel) = self.channels.lock().unwrap().get(&id) {
                     ctx.spawn(self.modify_source_future(
@@ -283,6 +286,7 @@ impl Controller {
                         channel.clone(),
                         source_id,
                         cue_time,
+                        end_time,
                     ));
                 } else {
                     ctx.notify(ErrorMessage {

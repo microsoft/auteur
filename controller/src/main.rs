@@ -73,7 +73,11 @@ enum ChannelSubCommand {
         /// The id of an existing source cued in the channel
         source_id: uuid::Uuid,
         /// When to cue the source
-        cue_time: DateTime<Utc>,
+        #[clap(long)]
+        cue_time: Option<DateTime<Utc>>,
+        /// When to stop the source.
+        #[clap(long)]
+        end_time: Option<DateTime<Utc>>,
     },
     /// Remove a source. If the source is currently playing it is stopped
     Remove {
@@ -124,10 +128,12 @@ fn main() -> Result<(), Error> {
                     id,
                     source_id,
                     cue_time,
+                    end_time,
                 } => ControllerCommand::ModifySource {
                     id,
                     source_id,
                     cue_time,
+                    end_time,
                 },
                 ChannelSubCommand::Remove { id, source_id } => {
                     ControllerCommand::RemoveSource { id, source_id }

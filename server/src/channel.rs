@@ -154,37 +154,35 @@ impl Channel {
         }
     }
 
-    fn tear_down_source(&mut self, id: uuid::Uuid) -> Result<(), Error> {
-        if let Some(source) = self.sources.remove(&id) {
+    fn tear_down_source(&mut self, source: Source) {
+        // When the source is still linked to the mixer, we want to
+        // collect the mixer pads and mute them, finalize the source
+        // then remove the now-unlinked mixer pads
+        let mut peers = vec![];
+
+        source.src.foreach_src_pad(|_, pad| {
+            if let Some(peer) = pad.peer() {
+                if peer.has_property("alpha", None) {
+                    peer.set_property("alpha", &0.).unwrap();
+                } else {
+                    peer.set_property("volume", &0.).unwrap();
+                }
+                peers.push(peer);
+            }
+            true
+        });
+
+        source.src.set_locked_state(true);
+        source.src.set_state(gst::State::Null).unwrap();
+        self.pipeline.remove(&source.src).unwrap();
+    }
+
+    fn tear_down_cued_source(&mut self, id: uuid::Uuid) -> Result<(), Error> {
+        if let Some(mut source) = self.sources.remove(&id) {
             debug!("Tearing down source {}", id);
 
-            if let Some(gst_source) = source.source {
-                // When the source is still linked to the mixer, we want to
-                // collect the mixer pads and mute them, finalize the source
-                // then remove the now-unlinked mixer pads
-                let mut peers = vec![];
-
-                gst_source.src.foreach_src_pad(|_, pad| {
-                    if let Some(peer) = pad.peer() {
-                        if peer.has_property("alpha", None) {
-                            peer.set_property("alpha", &0.).unwrap();
-                        } else {
-                            peer.set_property("volume", &0.).unwrap();
-                        }
-                        peers.push(peer);
-                    }
-                    true
-                });
-
-                gst_source.src.set_locked_state(true);
-                gst_source.src.set_state(gst::State::Null).unwrap();
-                self.pipeline.remove(&gst_source.src).unwrap();
-
-                for peer in &peers {
-                    if let Some(mixer) = peer.parent() {
-                        let _ = mixer.downcast::<gst::Element>().unwrap().remove_pad(peer);
-                    }
-                }
+            if let Some(gst_source) = source.source.take() {
+                self.tear_down_source(gst_source);
             }
 
             let _ = self.cued_actions.remove(&source.id);
@@ -254,7 +252,7 @@ impl Channel {
                 );
 
                 if source.n_streams == 0 {
-                    let _ = self.tear_down_source(source_id);
+                    let _ = self.tear_down_cued_source(source_id);
                 }
             }
         }
@@ -402,7 +400,6 @@ impl Channel {
                     );
 
                     // TODO use result
-                    error!("Linking {:?} | {:?}", pad, mixer_sinkpad);
                     let _ = pad.link(&mixer_sinkpad);
 
                     addr.do_send(StreamMessage {
@@ -492,7 +489,7 @@ impl Channel {
                     }
                     SourceStatus::Stopped => {
                         debug!("Reached end time for source {}", id);
-                        let _ = self.tear_down_source(id);
+                        let _ = self.tear_down_cued_source(id);
                     }
                     _ => unreachable!(),
                 },
@@ -548,28 +545,143 @@ impl Channel {
     fn modify_source(
         &mut self,
         ctx: &mut Context<Self>,
-        source_id: uuid::Uuid,
-        cue_time: DateTime<Utc>,
-    ) -> Result<(), Error> {
-        /*
-        if let Some((id, Reverse(mut source))) = self.cued_actions.remove(&source_id) {
-            source.cue_time = cue_time;
-            source.next_time = Some(cue_time - chrono::Duration::seconds(10));
-
-            if let Some(source) = self.sources.remove(&id) {
-                self.tear_down_source(source);
+        mut source: CuedSource,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> (Result<(), Error>, CuedSource) {
+        if let Some(cue_time) = cue_time {
+            if let Some(end_time) = end_time {
+                if end_time <= cue_time {
+                    return (
+                        Err(anyhow!("cue_time {} > end_time {}", cue_time, end_time)),
+                        source,
+                    );
+                }
+            } else if let Some(end_time) = source.end_time {
+                if end_time <= cue_time {
+                    return (
+                        Err(anyhow!("cue_time {} > end_time {}", cue_time, end_time)),
+                        source,
+                    );
+                }
             }
 
-            self.cued_actions.push(id, Reverse(source));
+            match source.status {
+                SourceStatus::Initial => {
+                    let _ = self.cued_actions.remove(&source.id);
+
+                    source.cue_time = cue_time;
+
+                    self.cued_actions.push(
+                        source.id,
+                        Reverse(CuedAction {
+                            next_time: cue_time - chrono::Duration::seconds(10),
+                            item: CuedItem::Source {
+                                id: source.id,
+                                next: SourceStatus::Prerolling,
+                            },
+                        }),
+                    );
+                }
+                SourceStatus::Prerolling => {
+                    let _ = self.cued_actions.remove(&source.id);
+
+                    if let Some(gst_source) = source.source.take() {
+                        self.tear_down_source(gst_source);
+                    }
+
+                    source.cue_time = cue_time;
+
+                    self.cued_actions.push(
+                        source.id,
+                        Reverse(CuedAction {
+                            next_time: cue_time - chrono::Duration::seconds(10),
+                            item: CuedItem::Source {
+                                id: source.id,
+                                next: SourceStatus::Prerolling,
+                            },
+                        }),
+                    );
+                }
+                SourceStatus::Playing | SourceStatus::Stopped => {
+                    return (
+                        Err(anyhow!(
+                            "Cannot change cue time of source {} as its status is {:?}",
+                            source.id,
+                            source.status
+                        )),
+                        source,
+                    );
+                }
+            }
+        }
+
+        if let Some(end_time) = end_time {
+            if end_time <= source.cue_time {
+                return (
+                    Err(anyhow!(
+                        "cue_time {} > end_time {}",
+                        source.cue_time,
+                        end_time
+                    )),
+                    source,
+                );
+            }
+
+            match source.status {
+                SourceStatus::Initial | SourceStatus::Prerolling => {
+                    source.end_time = Some(end_time);
+                }
+                SourceStatus::Playing => {
+                    let _ = self.cued_actions.remove(&source.id);
+
+                    source.end_time = Some(end_time);
+
+                    self.cued_actions.push(
+                        source.id,
+                        Reverse(CuedAction {
+                            next_time: end_time,
+                            item: CuedItem::Source {
+                                id: source.id,
+                                next: SourceStatus::Stopped,
+                            },
+                        }),
+                    );
+                }
+                SourceStatus::Stopped => {
+                    return (
+                        Err(anyhow!(
+                            "Cannot change end time of source {} as its status is {:?}",
+                            source.id,
+                            source.status
+                        )),
+                        source,
+                    );
+                }
+            }
+        }
+
+        (Ok(()), source)
+    }
+
+    fn modify_source_id(
+        &mut self,
+        ctx: &mut Context<Self>,
+        source_id: uuid::Uuid,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        if let Some(source) = self.sources.remove(&source_id) {
+            let (res, source) = self.modify_source(ctx, source, cue_time, end_time);
+
+            self.sources.insert(source_id, source);
 
             self.schedule(ctx);
 
-            Ok(())
+            res
         } else {
-            Err(anyhow!("no source with id {}", source_id))
+            Err(anyhow!("No source with id {}", source_id))
         }
-        */
-        Ok(())
     }
 
     fn remove_source(
@@ -577,7 +689,7 @@ impl Channel {
         ctx: &mut Context<Self>,
         source_id: uuid::Uuid,
     ) -> Result<(), Error> {
-        self.tear_down_source(source_id)
+        self.tear_down_cued_source(source_id)
     }
 
     fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
@@ -782,7 +894,8 @@ impl Handler<AddSourceMessage> for Channel {
 #[derive(Debug)]
 pub struct ModifySourceMessage {
     pub id: uuid::Uuid,
-    pub cue_time: DateTime<Utc>,
+    pub cue_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
 }
 
 impl Message for ModifySourceMessage {
@@ -793,7 +906,7 @@ impl Handler<ModifySourceMessage> for Channel {
     type Result = MessageResult<ModifySourceMessage>;
 
     fn handle(&mut self, msg: ModifySourceMessage, ctx: &mut Context<Self>) -> Self::Result {
-        MessageResult(self.modify_source(ctx, msg.id, msg.cue_time))
+        MessageResult(self.modify_source_id(ctx, msg.id, msg.cue_time, msg.end_time))
     }
 }
 
