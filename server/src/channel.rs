@@ -774,6 +774,7 @@ impl Actor for Channel {
     /// Called once the channel is stopped
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         let _ = self.channels.lock().unwrap().remove(&self.id);
+        let _ = self.pipeline.set_state(gst::State::Null);
         let sources: Vec<CuedSource> = self.sources.drain().map(|(_, source)| source).collect();
         for mut source in sources {
             if let Some(source) = source.source.take() {
