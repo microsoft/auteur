@@ -1,4 +1,4 @@
-use crate::utils::StreamProducer;
+use crate::utils::{StreamProducer, make_element};
 use actix::{
     Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, MessageResult, SpawnHandle,
     StreamHandler,
@@ -99,11 +99,6 @@ pub struct Channel {
     audio_producer: StreamProducer,
     video_producer: StreamProducer,
     destinations: HashMap<uuid::Uuid, CuedDestination>,
-}
-
-fn make(element: &str, name: Option<&str>) -> Result<gst::Element, Error> {
-    gst::ElementFactory::make(element, name)
-        .map_err(|err| anyhow!("Failed to make element {}: {}", element, err.message))
 }
 
 impl Channel {
@@ -344,7 +339,7 @@ impl Channel {
     ) -> Result<(), Error> {
         if let Some(source) = self.sources.get_mut(&id) {
             let bin = gst::Bin::new(None);
-            let src = make("fallbacksrc", None)?;
+            let src = make_element("fallbacksrc", None)?;
             let _ = bin.add(&src);
 
             src.set_property("uri", &source.uri).unwrap();
@@ -361,8 +356,8 @@ impl Channel {
                     let (mixer, pad) = {
                         if is_video {
                             // TODO: bubble up errors
-                            let vscale = make("videoscale", None).unwrap();
-                            let capsfilter = make("capsfilter", None).unwrap();
+                            let vscale = make_element("videoscale", None).unwrap();
+                            let capsfilter = make_element("capsfilter", None).unwrap();
                             capsfilter
                                 .set_property(
                                     "caps",
@@ -391,8 +386,8 @@ impl Channel {
                             )
                         } else {
                             // TODO: bubble up errors
-                            let audioconvert = make("audioconvert", None).unwrap();
-                            let audioresample = make("audioresample", None).unwrap();
+                            let audioconvert = make_element("audioconvert", None).unwrap();
+                            let audioresample = make_element("audioresample", None).unwrap();
                             bin_clone
                                 .add_many(&[&audioconvert, &audioresample])
                                 .unwrap();
@@ -915,23 +910,23 @@ impl Channel {
             .unwrap()
             .downcast::<gst_app::AppSrc>()
             .unwrap();
-        let timecodestamper = make("timecodestamper", None)?;
-        let timeoverlay = make("timeoverlay", None)?;
-        let venc = make("x264enc", None)?;
-        let vparse = make("h264parse", None)?;
-        let venc_queue = make("queue", None)?;
+        let timecodestamper = make_element("timecodestamper", None)?;
+        let timeoverlay = make_element("timeoverlay", None)?;
+        let venc = make_element("x264enc", None)?;
+        let vparse = make_element("h264parse", None)?;
+        let venc_queue = make_element("queue", None)?;
 
         let audio_appsrc = gst::ElementFactory::make("appsrc", None)
             .unwrap()
             .downcast::<gst_app::AppSrc>()
             .unwrap();
-        let aconv = make("audioconvert", None)?;
-        let aenc = make("faac", None)?;
-        let aenc_queue = make("queue", None)?;
+        let aconv = make_element("audioconvert", None)?;
+        let aenc = make_element("faac", None)?;
+        let aenc_queue = make_element("queue", None)?;
 
-        let mux = make("flvmux", None)?;
-        let mux_queue = make("queue", None)?;
-        let sink = make("rtmp2sink", None)?;
+        let mux = make_element("flvmux", None)?;
+        let mux_queue = make_element("queue", None)?;
+        let sink = make_element("rtmp2sink", None)?;
 
         pipeline.add_many(&[
             video_appsrc.upcast_ref(),
@@ -1008,18 +1003,18 @@ impl Channel {
     }
 
     fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        let vsrc = make("videotestsrc", None)?;
-        let vqueue = make("queue", None)?;
-        let vmixer = make("compositor", Some("compositor"))?;
-        let vconv = make("videoconvert", None)?;
-        let vdeinterlace = make("deinterlace", None)?;
-        let vscale = make("videoscale", None)?;
-        let vcapsfilter = make("capsfilter", None)?;
+        let vsrc = make_element("videotestsrc", None)?;
+        let vqueue = make_element("queue", None)?;
+        let vmixer = make_element("compositor", Some("compositor"))?;
+        let vconv = make_element("videoconvert", None)?;
+        let vdeinterlace = make_element("deinterlace", None)?;
+        let vscale = make_element("videoscale", None)?;
+        let vcapsfilter = make_element("capsfilter", None)?;
 
-        let asrc = make("audiotestsrc", None)?;
-        let aqueue = make("queue", None)?;
-        let amixer = make("audiomixer", Some("audiomixer"))?;
-        let acapsfilter = make("capsfilter", None)?;
+        let asrc = make_element("audiotestsrc", None)?;
+        let aqueue = make_element("queue", None)?;
+        let amixer = make_element("audiomixer", Some("audiomixer"))?;
+        let acapsfilter = make_element("capsfilter", None)?;
 
         vsrc.set_property("is-live", &true).unwrap();
         vsrc.set_property_from_str("pattern", "black");

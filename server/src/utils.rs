@@ -5,6 +5,7 @@ use std::sync::{atomic, Arc, Mutex};
 use gst::prelude::*;
 
 use tracing::{debug, error, trace, warn};
+use anyhow::{anyhow, Error};
 
 #[derive(Debug, Clone)]
 pub struct StreamProducer {
@@ -273,4 +274,9 @@ pub enum WebRTCMessage {
         type_: String,
         sdp: String,
     },
+}
+
+pub fn make_element(element: &str, name: Option<&str>) -> Result<gst::Element, Error> {
+    gst::ElementFactory::make(element, name)
+        .map_err(|err| anyhow!("Failed to make element {}: {}", element, err.message))
 }
