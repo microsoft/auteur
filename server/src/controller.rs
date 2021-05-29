@@ -3,7 +3,6 @@
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
 use crate::channel::Channel;
-use crate::config::Config;
 
 use anyhow::{format_err, Error};
 
@@ -27,7 +26,6 @@ use rtmp_switcher_controlling::controller::{
 /// Actor that represents an application controller.
 #[derive(Debug)]
 pub struct Controller {
-    cfg: Arc<Config>,
     channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
     remote_addr: String,
 }
@@ -35,7 +33,6 @@ pub struct Controller {
 impl Controller {
     /// Create a new `Controller` actor.
     pub fn new(
-        cfg: Arc<Config>,
         channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
         connection_info: &ConnectionInfo,
     ) -> Result<Self, Error> {
@@ -46,7 +43,6 @@ impl Controller {
             .ok_or_else(|| format_err!("WebSocket connection without remote address"))?;
 
         Ok(Controller {
-            cfg,
             channels,
             remote_addr: String::from(remote_addr),
         })
@@ -307,7 +303,7 @@ impl Controller {
     ) {
         match command {
             ControllerCommand::StartChannel { name } => {
-                let channel = Channel::new(self.cfg.clone(), self.channels.clone(), &name);
+                let channel = Channel::new(self.channels.clone(), &name);
                 let id = channel.id;
 
                 self.channels.lock().unwrap().insert(id, channel.start());

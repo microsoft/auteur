@@ -1,4 +1,3 @@
-use crate::config::Config;
 use crate::utils::StreamProducer;
 use actix::{
     Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, MessageResult, SpawnHandle,
@@ -90,7 +89,6 @@ struct CuedDestination {
 /// Actor that represents a channel
 #[derive(Debug)]
 pub struct Channel {
-    cfg: Arc<Config>,
     channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
     pub id: uuid::Uuid,
     name: String,
@@ -110,7 +108,6 @@ fn make(element: &str, name: Option<&str>) -> Result<gst::Element, Error> {
 
 impl Channel {
     pub fn new(
-        cfg: Arc<Config>,
         channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
         name: &str,
     ) -> Self {
@@ -132,7 +129,6 @@ impl Channel {
             .unwrap();
 
         Self {
-            cfg,
             channels,
             id,
             name: name.to_string(),

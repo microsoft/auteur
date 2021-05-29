@@ -17,7 +17,6 @@ use tracing::error;
 
 /// Create Subscriber/Publisher WebSocket actors.
 async fn ws(
-    cfg: web::Data<Config>,
     channels: web::Data<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
     path: web::Path<String>,
     req: HttpRequest,
@@ -26,7 +25,6 @@ async fn ws(
     match path.as_str() {
         "control" => {
             let controller = Controller::new(
-                cfg.into_inner(),
                 channels.into_inner(),
                 &req.connection_info(),
             )
@@ -45,8 +43,6 @@ async fn ws(
 pub async fn run(cfg: Config) -> Result<(), anyhow::Error> {
     let channels: HashMap<uuid::Uuid, Addr<Channel>> = HashMap::new();
     let channels = web::Data::new(Mutex::new(channels));
-    let cfg = web::Data::new(cfg);
-    let cfg_clone = cfg.clone();
     let channels_clone = channels.clone();
 
     let server = HttpServer::new(move || {
@@ -55,7 +51,6 @@ pub async fn run(cfg: Config) -> Result<(), anyhow::Error> {
         App::new()
             .wrap(actix_web::middleware::Logger::default())
             .wrap(cors)
-            .app_data(cfg_clone.clone())
             .app_data(channels_clone.clone())
             .route("/ws/{mode:(control)}", web::get().to(ws))
     });
