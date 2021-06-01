@@ -1,11 +1,13 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::mem;
 use std::sync::{atomic, Arc, Mutex};
 
+use actix::prelude::*;
+use futures::prelude::*;
 use gst::prelude::*;
 
-use tracing::{debug, error, trace, warn};
 use anyhow::{anyhow, Error};
+use tracing::{debug, error, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct StreamProducer {
@@ -22,18 +24,15 @@ impl PartialEq for StreamProducer {
 impl Eq for StreamProducer {}
 
 impl StreamProducer {
-    pub fn add_consumer(&self, consumer: &gst_app::AppSrc) {
+    pub fn add_consumer(&self, consumer: &gst_app::AppSrc, consumer_id: &str) {
         let mut consumers = self.consumers.lock().unwrap();
-        if consumers.consumers.contains(consumer) {
+        if consumers.consumers.get(consumer_id).is_some() {
             error!(appsink = %self.appsink.name(), appsrc = %consumer.name(), "Consumer already added");
             return;
         }
 
         debug!(appsink = %self.appsink.name(), appsrc = %consumer.name(), "Adding consumer");
 
-        consumer.set_format(gst::Format::Time);
-        consumer.set_is_live(true);
-        consumer.set_handle_segment_change(true);
         consumer.set_property("max-buffers", 0u64).unwrap();
         consumer.set_property("max-bytes", 0u64).unwrap();
         consumer
@@ -58,21 +57,36 @@ impl StreamProducer {
             })
             .unwrap();
 
-        consumers
-            .consumers
-            .insert(StreamConsumer::new(consumer, fku_probe_id));
+        consumers.consumers.insert(
+            consumer_id.to_string(),
+            StreamConsumer::new(consumer, fku_probe_id),
+        );
     }
 
-    pub fn remove_consumer(&self, consumer: &gst_app::AppSrc) {
-        if self.consumers.lock().unwrap().consumers.remove(consumer) {
-            debug!(appsink = %self.appsink.name(), appsrc = %consumer.name(), "Removed consumer");
+    pub fn remove_consumer(&self, consumer_id: &str) {
+        if let Some(consumer) = self.consumers.lock().unwrap().consumers.remove(consumer_id) {
+            debug!(appsink = %self.appsink.name(), appsrc = %consumer.appsrc.name(), "Removed consumer");
         } else {
-            debug!(appsink = %self.appsink.name(), appsrc = %consumer.name(), "Consumer not found");
+            debug!(appsink = %self.appsink.name(), consumer_id = %consumer_id, "Consumer not found");
         }
+    }
+
+    pub fn forward(&self) {
+        self.consumers.lock().unwrap().discard = false;
     }
 
     pub fn appsink(&self) -> &gst_app::AppSink {
         &self.appsink
+    }
+
+    pub fn get_consumer_ids(&self) -> Vec<String> {
+        self.consumers
+            .lock()
+            .unwrap()
+            .consumers
+            .keys()
+            .map(|id| id.to_string())
+            .collect()
     }
 }
 
@@ -81,7 +95,8 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
         let consumers = Arc::new(Mutex::new(StreamConsumers {
             current_latency: None,
             latency_updated: false,
-            consumers: HashSet::new(),
+            consumers: HashMap::new(),
+            discard: true,
         }));
 
         let consumers_clone = consumers.clone();
@@ -89,17 +104,30 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |appsink| {
+                    let mut consumers = consumers_clone.lock().unwrap();
+
+                    let sample = match appsink.pull_sample() {
+                        Ok(sample) => sample,
+                        Err(_err) => {
+                            debug!("Failed to pull sample");
+                            return Err(gst::FlowError::Flushing);
+                        }
+                    };
+
+                    if consumers.discard {
+                        return Ok(gst::FlowSuccess::Ok);
+                    }
+
                     let span = tracing::trace_span!("New sample", appsink = %appsink.name());
                     let _guard = span.enter();
 
-                    let mut consumers = consumers_clone.lock().unwrap();
                     let latency = consumers.current_latency;
                     let latency_updated = mem::replace(&mut consumers.latency_updated, false);
                     let mut requested_keyframe = false;
 
                     let current_consumers = consumers
                         .consumers
-                        .iter()
+                        .values()
                         .map(|c| {
                             if let Some(latency) = latency {
                                 if c.forwarded_latency
@@ -141,15 +169,7 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
                         .collect::<smallvec::SmallVec<[_; 16]>>();
                     drop(consumers);
 
-                    let sample = match appsink.pull_sample() {
-                        Ok(sample) => sample,
-                        Err(_err) => {
-                            debug!("Failed to pull sample");
-                            return Err(gst::FlowError::Flushing);
-                        }
-                    };
-
-                    //trace!("Appsink pushing sample {:?}", sample);
+                    //trace!("Appsink pushing sample {:?}, current running time: {}", sample, appsink.current_running_time());
                     for consumer in current_consumers {
                         if let Err(err) = consumer.push_sample(&sample) {
                             warn!(appsrc = %consumer.name(), "Failed to push sample: {}", err);
@@ -166,7 +186,7 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
                         .lock()
                         .unwrap()
                         .consumers
-                        .iter()
+                        .values()
                         .map(|c| c.appsrc.clone())
                         .collect::<smallvec::SmallVec<[_; 16]>>();
 
@@ -211,7 +231,8 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
 struct StreamConsumers {
     current_latency: Option<gst::ClockTime>,
     latency_updated: bool,
-    consumers: HashSet<StreamConsumer>,
+    consumers: HashMap<String, StreamConsumer>,
+    discard: bool,
 }
 
 #[derive(Debug)]
@@ -279,4 +300,93 @@ pub enum WebRTCMessage {
 pub fn make_element(element: &str, name: Option<&str>) -> Result<gst::Element, Error> {
     gst::ElementFactory::make(element, name)
         .map_err(|err| anyhow!("Failed to make element {}: {}", element, err.message))
+}
+
+#[derive(Debug)]
+struct BusMessage(gst::Message);
+
+impl Message for BusMessage {
+    type Result = ();
+}
+
+#[derive(Debug)]
+pub struct PipelineManager(gst::Pipeline, Recipient<ErrorMessage>);
+
+impl Actor for PipelineManager {
+    type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.0.use_clock(Some(&gst::SystemClock::obtain()));
+        self.0.set_start_time(gst::CLOCK_TIME_NONE);
+        self.0.set_base_time(gst::ClockTime::from(0));
+
+        let bus = self.0.bus().expect("Pipeline with no bus");
+        let bus_stream = bus.stream();
+        Self::add_stream(bus_stream.map(BusMessage), ctx);
+    }
+}
+
+impl StreamHandler<BusMessage> for PipelineManager {
+    fn handle(&mut self, msg: BusMessage, ctx: &mut Context<Self>) {
+        use gst::MessageView;
+
+        match msg.0.view() {
+            MessageView::Latency(_) => {
+                if let Some(src) = msg.0.src() {
+                    if &src == self.0.upcast_ref::<gst::Object>() || src.has_as_ancestor(&self.0) {
+                        trace!("Pipeline updated latency");
+                        self.0.call_async(|pipeline| {
+                            let _ = pipeline.recalculate_latency();
+                        });
+                    }
+                }
+            }
+            MessageView::Error(err) => {
+                let src = err.src();
+                let dbg = err.debug();
+                let err = err.error();
+
+                if let Some(dbg) = dbg {
+                    let _ = self.1.do_send(ErrorMessage(format!(
+                        "Got error from {}: {} ({})",
+                        src.as_ref()
+                            .map(|src| src.path_string())
+                            .as_deref()
+                            .unwrap_or("UNKNOWN"),
+                        err,
+                        dbg
+                    )));
+                } else {
+                    let _ = self.1.do_send(ErrorMessage(format!(
+                        "Got error from {}: {}",
+                        src.as_ref()
+                            .map(|src| src.path_string())
+                            .as_deref()
+                            .unwrap_or("UNKNOWN"),
+                        err
+                    )));
+                }
+            }
+            _ => (),
+        }
+    }
+}
+
+impl PipelineManager {
+    pub fn new(pipeline: gst::Pipeline, recipient: Recipient<ErrorMessage>) -> Self {
+        Self(pipeline, recipient)
+    }
+}
+
+impl Drop for PipelineManager {
+    fn drop(&mut self) {
+        let _ = self.0.set_state(gst::State::Null);
+    }
+}
+
+#[derive(Debug)]
+pub struct ErrorMessage(pub String);
+
+impl Message for ErrorMessage {
+    type Result = ();
 }

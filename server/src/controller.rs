@@ -2,7 +2,7 @@
 //
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
-use crate::channel::Channel;
+use crate::node::{CommandMessage, NodeManager};
 
 use anyhow::{format_err, Error};
 
@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use actix::{
-    Actor, ActorContext, ActorFuture, Addr, AsyncContext, Handler, Message, StreamHandler,
-    WrapFuture,
+    prelude::*, Actor, ActorContext, ActorFuture, Addr, AsyncContext, Handler, Message,
+    StreamHandler, WrapFuture,
 };
 use actix_web::dev::ConnectionInfo;
 use actix_web_actors::ws;
@@ -20,22 +20,18 @@ use chrono::{DateTime, Utc};
 use tracing::{debug, error, trace};
 
 use rtmp_switcher_controlling::controller::{
-    ControllerCommand, ControllerMessage, DestinationFamily, ServerCommandResult, ServerMessage,
+    Command, CommandResult, ControllerMessage, GraphCommand, NodeCommand, ServerMessage,
 };
 
 /// Actor that represents an application controller.
 #[derive(Debug)]
 pub struct Controller {
-    channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
     remote_addr: String,
 }
 
 impl Controller {
     /// Create a new `Controller` actor.
-    pub fn new(
-        channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
-        connection_info: &ConnectionInfo,
-    ) -> Result<Self, Error> {
+    pub fn new(connection_info: &ConnectionInfo) -> Result<Self, Error> {
         debug!("Creating new controller {:?}", connection_info);
 
         let remote_addr = connection_info
@@ -43,434 +39,39 @@ impl Controller {
             .ok_or_else(|| format_err!("WebSocket connection without remote address"))?;
 
         Ok(Controller {
-            channels,
             remote_addr: String::from(remote_addr),
         })
     }
 
-    fn get_channel_info_future(
+    fn send_command_future(
         &self,
         command_id: uuid::Uuid,
-        channel: Addr<Channel>,
+        command: Command,
     ) -> impl ActorFuture<Actor = Self, Output = ()> {
-        async move { channel.send(crate::channel::GetInfoMessage {}).await }
+        let node_manager = NodeManager::from_registry();
+
+        async move { node_manager.send(CommandMessage { command }).await }
             .into_actor(self)
             .then(move |res, _, ctx| {
-                ctx.text(
-                    serde_json::to_string(&ServerMessage {
-                        id: Some(command_id),
-                        result: ServerCommandResult::ChannelInfo(res.unwrap()),
-                    })
-                    .expect("failed to serialize ChannelInfo message"),
-                );
-                actix::fut::ready(())
-            })
-    }
-
-    fn add_source_future(
-        &self,
-        command_id: uuid::Uuid,
-        channel: Addr<Channel>,
-        uri: String,
-        cue_time: DateTime<Utc>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> impl ActorFuture<Actor = Self, Output = ()> {
-        async move {
-            channel
-                .send(crate::channel::AddSourceMessage {
-                    uri,
-                    cue_time,
-                    end_time,
-                })
-                .await
-        }
-        .into_actor(self)
-        .then(move |res, _, ctx| {
-            match res.unwrap() {
-                Ok(id) => {
-                    ctx.text(
-                        serde_json::to_string(&ServerMessage {
-                            id: Some(command_id),
-                            result: ServerCommandResult::SourceAdded { id },
-                        })
-                        .expect("failed to serialize SourceAdded message"),
-                    );
-                }
-                Err(err) => {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("Failed to add source: {:?}", err),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            actix::fut::ready(())
-        })
-    }
-
-    fn modify_source_future(
-        &self,
-        command_id: uuid::Uuid,
-        channel: Addr<Channel>,
-        source_id: uuid::Uuid,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> impl ActorFuture<Actor = Self, Output = ()> {
-        async move {
-            channel
-                .send(crate::channel::ModifySourceMessage {
-                    id: source_id,
-                    cue_time,
-                    end_time,
-                })
-                .await
-        }
-        .into_actor(self)
-        .then(move |res, _, ctx| {
-            match res.unwrap() {
-                Ok(()) => {
-                    ctx.text(
-                        serde_json::to_string(&ServerMessage {
-                            id: Some(command_id),
-                            result: ServerCommandResult::SourceModified { id: source_id },
-                        })
-                        .expect("failed to serialize SourceModified message"),
-                    );
-                }
-                Err(err) => {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("Failed to modify source: {:?}", err),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            actix::fut::ready(())
-        })
-    }
-
-    fn remove_source_future(
-        &self,
-        command_id: uuid::Uuid,
-        channel: Addr<Channel>,
-        source_id: uuid::Uuid,
-    ) -> impl ActorFuture<Actor = Self, Output = ()> {
-        async move {
-            channel
-                .send(crate::channel::RemoveSourceMessage { id: source_id })
-                .await
-        }
-        .into_actor(self)
-        .then(move |res, _, ctx| {
-            match res.unwrap() {
-                Ok(()) => {
-                    ctx.text(
-                        serde_json::to_string(&ServerMessage {
-                            id: Some(command_id),
-                            result: ServerCommandResult::SourceRemoved { id: source_id },
-                        })
-                        .expect("failed to serialize SourceRemoved message"),
-                    );
-                }
-                Err(err) => {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("Failed to remove source: {:?}", err),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            actix::fut::ready(())
-        })
-    }
-
-    fn add_destination_future(
-        &self,
-        command_id: uuid::Uuid,
-        channel: Addr<Channel>,
-        family: DestinationFamily,
-        cue_time: DateTime<Utc>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> impl ActorFuture<Actor = Self, Output = ()> {
-        async move {
-            channel
-                .send(crate::channel::AddDestinationMessage {
-                    family,
-                    cue_time,
-                    end_time,
-                })
-                .await
-        }
-        .into_actor(self)
-        .then(move |res, _, ctx| {
-            match res.unwrap() {
-                Ok(id) => {
-                    ctx.text(
-                        serde_json::to_string(&ServerMessage {
-                            id: Some(command_id),
-                            result: ServerCommandResult::DestinationAdded { id },
-                        })
-                        .expect("failed to serialize DestinationAdded message"),
-                    );
-                }
-                Err(err) => {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("Failed to add destination: {:?}", err),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            actix::fut::ready(())
-        })
-    }
-
-    fn modify_destination_future(
-        &self,
-        command_id: uuid::Uuid,
-        channel: Addr<Channel>,
-        destination_id: uuid::Uuid,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> impl ActorFuture<Actor = Self, Output = ()> {
-        async move {
-            channel
-                .send(crate::channel::ModifyDestinationMessage {
-                    id: destination_id,
-                    cue_time,
-                    end_time,
-                })
-                .await
-        }
-        .into_actor(self)
-        .then(move |res, _, ctx| {
-            match res.unwrap() {
-                Ok(()) => {
-                    ctx.text(
-                        serde_json::to_string(&ServerMessage {
-                            id: Some(command_id),
-                            result: ServerCommandResult::SourceModified { id: destination_id },
-                        })
-                        .expect("failed to serialize DestinationModified message"),
-                    );
-                }
-                Err(err) => {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("Failed to modify destination: {:?}", err),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            actix::fut::ready(())
-        })
-    }
-
-    fn remove_destination_future(
-        &self,
-        command_id: uuid::Uuid,
-        channel: Addr<Channel>,
-        destination_id: uuid::Uuid,
-    ) -> impl ActorFuture<Actor = Self, Output = ()> {
-        async move {
-            channel
-                .send(crate::channel::RemoveSourceMessage { id: destination_id })
-                .await
-        }
-        .into_actor(self)
-        .then(move |res, _, ctx| {
-            match res.unwrap() {
-                Ok(()) => {
-                    ctx.text(
-                        serde_json::to_string(&ServerMessage {
-                            id: Some(command_id),
-                            result: ServerCommandResult::SourceRemoved { id: destination_id },
-                        })
-                        .expect("failed to serialize SourceRemoved message"),
-                    );
-                }
-                Err(err) => {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("Failed to remove source: {:?}", err),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            actix::fut::ready(())
-        })
-    }
-
-    fn run_command(
-        &mut self,
-        ctx: &mut ws::WebsocketContext<Self>,
-        command_id: uuid::Uuid,
-        command: ControllerCommand,
-    ) {
-        match command {
-            ControllerCommand::StartChannel { name } => {
-                let channel = Channel::new(self.channels.clone(), &name);
-                let id = channel.id;
-
-                self.channels.lock().unwrap().insert(id, channel.start());
-
-                ctx.text(
-                    serde_json::to_string(&ServerMessage {
-                        id: Some(command_id),
-                        result: ServerCommandResult::ChannelStarted { id },
-                    })
-                    .expect("failed to serialize ChannelStarted message"),
-                );
-            }
-            ControllerCommand::StopChannel { id } => {
-                match self.channels.lock().unwrap().remove(&id) {
-                    Some(_) => {
+                match res.unwrap() {
+                    Ok(()) => {
                         ctx.text(
                             serde_json::to_string(&ServerMessage {
                                 id: Some(command_id),
-                                result: ServerCommandResult::ChannelStopped { id },
+                                result: CommandResult::Success,
                             })
-                            .expect("failed to serialize ChannelStopped message"),
+                            .expect("failed to serialize CommandResult message"),
                         );
                     }
-                    None => {
+                    Err(err) => {
                         ctx.notify(ErrorMessage {
-                            msg: format!("No channel with id {:?}", id),
+                            msg: format!("Failed to run command: {:?}", err),
                             command_id: Some(command_id),
                         });
                     }
                 }
-            }
-            ControllerCommand::ListChannels => {
-                ctx.text(
-                    serde_json::to_string(&ServerMessage {
-                        id: Some(command_id),
-                        result: ServerCommandResult::ChannelList {
-                            channels: self
-                                .channels
-                                .lock()
-                                .unwrap()
-                                .keys()
-                                .map(|id| id.clone())
-                                .collect(),
-                        },
-                    })
-                    .expect("failed to serialize ChannelList message"),
-                );
-            }
-            ControllerCommand::GetChannelInfo { id } => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.get_channel_info_future(command_id, channel.clone()));
-                } else {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("No channel with id {:?}", id),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            ControllerCommand::AddSource {
-                id,
-                uri,
-                cue_time,
-                end_time,
-            } => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.add_source_future(
-                        command_id,
-                        channel.clone(),
-                        uri,
-                        cue_time,
-                        end_time,
-                    ));
-                } else {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("No channel with id {:?}", id),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            ControllerCommand::ModifySource {
-                id,
-                source_id,
-                cue_time,
-                end_time,
-            } => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.modify_source_future(
-                        command_id,
-                        channel.clone(),
-                        source_id,
-                        cue_time,
-                        end_time,
-                    ));
-                } else {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("No channel with id {:?}", id),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            ControllerCommand::RemoveSource { id, source_id } => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.remove_source_future(command_id, channel.clone(), source_id));
-                } else {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("No channel with id {:?}", id),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            ControllerCommand::AddDestination {
-                id,
-                family,
-                cue_time,
-                end_time,
-            } => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.add_destination_future(
-                        command_id,
-                        channel.clone(),
-                        family,
-                        cue_time,
-                        end_time,
-                    ));
-                } else {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("No channel with id {:?}", id),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            ControllerCommand::ModifyDestination {
-                id,
-                destination_id,
-                cue_time,
-                end_time,
-            } => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.modify_destination_future(
-                        command_id,
-                        channel.clone(),
-                        destination_id,
-                        cue_time,
-                        end_time,
-                    ));
-                } else {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("No channel with id {:?}", id),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-            ControllerCommand::RemoveDestination { id, destination_id } => {
-                if let Some(channel) = self.channels.lock().unwrap().get(&id) {
-                    ctx.spawn(self.remove_destination_future(
-                        command_id,
-                        channel.clone(),
-                        destination_id,
-                    ));
-                } else {
-                    ctx.notify(ErrorMessage {
-                        msg: format!("No channel with id {:?}", id),
-                        command_id: Some(command_id),
-                    });
-                }
-            }
-        }
+                actix::fut::ready(())
+            })
     }
 
     /// Handle JSON messages from the controller.
@@ -478,7 +79,9 @@ impl Controller {
         trace!("Handling message: {}", text);
         match serde_json::from_str::<ControllerMessage>(text) {
             Ok(ControllerMessage { id, command }) => {
-                self.run_command(ctx, id, command);
+                let node_manager = NodeManager::from_registry();
+
+                ctx.spawn(self.send_command_future(id, command));
             }
             Err(err) => {
                 error!(
@@ -551,7 +154,6 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for Controller {
     }
 }
 
-/// Message to report channel errors to the actor.
 #[derive(Debug)]
 struct ErrorMessage {
     msg: String,
@@ -574,7 +176,7 @@ impl Handler<ErrorMessage> for Controller {
         ctx.text(
             serde_json::to_string(&ServerMessage {
                 id: msg.command_id,
-                result: ServerCommandResult::Error { message: msg.msg },
+                result: CommandResult::Error { message: msg.msg },
             })
             .expect("Failed to serialize error message"),
         );

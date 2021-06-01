@@ -1,4 +1,4 @@
-use crate::utils::{StreamProducer, make_element};
+use crate::utils::{make_element, StreamProducer};
 use actix::{
     Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, MessageResult, SpawnHandle,
     StreamHandler,
@@ -99,13 +99,12 @@ pub struct Channel {
     audio_producer: StreamProducer,
     video_producer: StreamProducer,
     destinations: HashMap<uuid::Uuid, CuedDestination>,
+
+    consumer_slot_id: uuid::Uuid,
 }
 
 impl Channel {
-    pub fn new(
-        channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>,
-        name: &str,
-    ) -> Self {
+    pub fn new(channels: Arc<Mutex<HashMap<uuid::Uuid, Addr<Channel>>>>, name: &str) -> Self {
         let id = uuid::Uuid::new_v4();
         let pipeline = gst::Pipeline::new(Some(&id.to_string()));
 
@@ -134,6 +133,8 @@ impl Channel {
             audio_producer: StreamProducer::from(&audio_appsink),
             video_producer: StreamProducer::from(&video_appsink),
             destinations: HashMap::new(),
+
+            consumer_slot_id: uuid::Uuid::new_v4(),
         }
     }
 
@@ -319,8 +320,8 @@ impl Channel {
             debug!("Tearing down destination {}", id);
 
             if let Some(consumer) = destination.consumer.take() {
-                self.video_producer.remove_consumer(&consumer.video_appsrc);
-                self.audio_producer.remove_consumer(&consumer.audio_appsrc);
+                self.video_producer.remove_consumer(self.consumer_slot_id);
+                self.audio_producer.remove_consumer(self.consumer_slot_id);
                 let _ = consumer.pipeline.set_state(gst::State::Null);
             }
 
@@ -986,8 +987,10 @@ impl Channel {
         pipeline.set_start_time(gst::CLOCK_TIME_NONE);
         pipeline.set_base_time(gst::ClockTime::from(0));
 
-        self.video_producer.add_consumer(&video_appsrc);
-        self.audio_producer.add_consumer(&audio_appsrc);
+        self.video_producer
+            .add_consumer(&video_appsrc, self.consumer_slot_id);
+        self.audio_producer
+            .add_consumer(&audio_appsrc, self.consumer_slot_id);
 
         pipeline.call_async(move |pipeline| {
             if let Err(_) = pipeline.set_state(gst::State::Playing) {
@@ -1137,8 +1140,8 @@ impl Actor for Channel {
             .collect();
         for mut destination in destinations {
             if let Some(consumer) = destination.consumer.take() {
-                self.video_producer.remove_consumer(&consumer.video_appsrc);
-                self.audio_producer.remove_consumer(&consumer.audio_appsrc);
+                self.video_producer.remove_consumer(self.consumer_slot_id);
+                self.audio_producer.remove_consumer(self.consumer_slot_id);
                 let _ = consumer.pipeline.set_state(gst::State::Null);
             }
         }

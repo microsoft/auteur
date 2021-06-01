@@ -6,95 +6,77 @@ use chrono::offset::Utc;
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 
-/// Commands to execute on the switcher
+/// Commands to execute on a source
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ControllerCommand {
-    StartChannel {
-        /// Display name
-        name: String,
+pub enum SourceCommand {
+    Play {
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
     },
-    StopChannel {
-        /// Assigned identifier
-        id: uuid::Uuid,
+}
+
+/// Commands to execute on a destination
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DestinationCommand {
+    Start {
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
     },
-    GetChannelInfo {
-        /// Assigned identifier
-        id: uuid::Uuid,
+}
+
+/// Commands to execute on a mixer
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MixerCommand {
+    Start {
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
     },
-    AddSource {
-        /// What channel the source should be added to
-        id: uuid::Uuid,
-        /// URI of the source
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeCommands {
+    Source(SourceCommand),
+    Destination(DestinationCommand),
+    Mixer(MixerCommand),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct NodeCommand {
+    pub id: String,
+    pub command: NodeCommands,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphCommand {
+    CreateSource {
+        id: String,
         uri: String,
-        /// When the source should be cued
-        cue_time: DateTime<Utc>,
-        /// Until when the source should play back. If None, playback will
-        /// continue until either:
-        ///
-        /// * the underlying media goes EOS
-        /// * the source is removed
-        /// * a new end time provided with ModifySource
-        ///
-        /// end_time <= cue_time is considered an error
-        end_time: Option<DateTime<Utc>>,
     },
-    ModifySource {
-        /// The id of the channel the source belongs to
-        id: uuid::Uuid,
-        /// The ID of the source to modify
-        source_id: uuid::Uuid,
-        /// The new cue time of the source, None leaves it
-        /// unchanged
-        cue_time: Option<DateTime<Utc>>,
-        /// The new end time of the source, None leaves it
-        /// unchanged
-        end_time: Option<DateTime<Utc>>,
-    },
-    /// Remove a source
-    RemoveSource {
-        /// The id of the channel the source belongs to
-        id: uuid::Uuid,
-        /// The ID of the source to remove
-        source_id: uuid::Uuid,
-    },
-    AddDestination {
-        /// What channel the destination should be added to
-        id: uuid::Uuid,
-        /// family of the source
+    CreateDestination {
+        id: String,
         family: DestinationFamily,
-        /// When the destination should be cued
-        cue_time: DateTime<Utc>,
-        /// Until when the destination should stream. If None, playback will
-        /// continue until either:
-        ///
-        /// * the destination is removed
-        /// * a new end time provided with ModifyDestination
-        ///
-        /// end_time <= cue_time is considered an error
-        end_time: Option<DateTime<Utc>>,
     },
-    ModifyDestination {
-        /// The id of the channel the destination belongs to
-        id: uuid::Uuid,
-        /// The ID of the destination to modify
-        destination_id: uuid::Uuid,
-        /// The new cue time of the destination, None leaves it
-        /// unchanged
-        cue_time: Option<DateTime<Utc>>,
-        /// The new end time of the destination, None leaves it
-        /// unchanged
-        end_time: Option<DateTime<Utc>>,
+    CreateMixer {
+        id: String,
     },
-    /// Remove a destination
-    RemoveDestination {
-        /// The id of the channel the destination belongs to
-        id: uuid::Uuid,
-        /// The ID of the destination to remove
-        destination_id: uuid::Uuid,
+    Connect {
+        link_id: String,
+        src_id: String,
+        sink_id: String,
     },
-    /// List all channel IDs
-    ListChannels,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Command {
+    Node(NodeCommand),
+    Graph(GraphCommand),
 }
 
 /// Messages sent from the controller to the switcher.
@@ -104,7 +86,7 @@ pub struct ControllerMessage {
     /// Identifier of the command
     pub id: uuid::Uuid,
     /// The command to run
-    pub command: ControllerCommand,
+    pub command: Command,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -122,6 +104,13 @@ pub enum DestinationStatus {
     Stopped,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MixerStatus {
+    Initial,
+    Mixing,
+    Stopped,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DestinationFamily {
     RTMP { uri: String },
@@ -130,7 +119,7 @@ pub enum DestinationFamily {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct SourceInfo {
-    pub id: uuid::Uuid,
+    pub id: String,
     pub uri: String,
     pub cue_time: DateTime<Utc>,
     pub end_time: Option<DateTime<Utc>>,
@@ -140,7 +129,7 @@ pub struct SourceInfo {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct DestinationInfo {
-    pub id: uuid::Uuid,
+    pub id: String,
     pub family: DestinationFamily,
     pub cue_time: DateTime<Utc>,
     pub end_time: Option<DateTime<Utc>>,
@@ -150,7 +139,7 @@ pub struct DestinationInfo {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct ChannelInfo {
-    pub id: uuid::Uuid,
+    pub id: String,
     pub name: String,
     pub sources: Vec<SourceInfo>,
     pub destinations: Vec<DestinationInfo>,
@@ -159,18 +148,9 @@ pub struct ChannelInfo {
 /// Messages sent from the the server to the controller.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ServerCommandResult {
+pub enum CommandResult {
     Error { message: String },
-    ChannelList { channels: Vec<uuid::Uuid> },
-    ChannelStarted { id: uuid::Uuid },
-    ChannelStopped { id: uuid::Uuid },
-    ChannelInfo(ChannelInfo),
-    SourceAdded { id: uuid::Uuid },
-    SourceModified { id: uuid::Uuid },
-    SourceRemoved { id: uuid::Uuid },
-    DestinationAdded { id: uuid::Uuid },
-    DestinationModified { id: uuid::Uuid },
-    DestinationRemoved { id: uuid::Uuid },
+    Success,
 }
 
 /// Messages sent from the the server to the controller.
@@ -180,5 +160,5 @@ pub struct ServerMessage {
     /// Identifier of the command result
     pub id: Option<uuid::Uuid>,
     /// The command result
-    pub result: ServerCommandResult,
+    pub result: CommandResult,
 }

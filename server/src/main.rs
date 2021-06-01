@@ -2,10 +2,13 @@
 //
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
-mod channel;
 mod config;
 mod controller;
+mod destination;
+mod mixer;
+mod node;
 mod server;
+mod source;
 mod utils;
 
 use anyhow::Error;

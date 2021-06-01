@@ -10,7 +10,10 @@ use std::path::PathBuf;
 mod controller;
 use controller::Controller;
 
-use rtmp_switcher_controlling::controller::{ControllerCommand, DestinationFamily};
+use rtmp_switcher_controlling::controller::{
+    Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, NodeCommand,
+    NodeCommands, SourceCommand,
+};
 
 #[derive(Clap, Debug)]
 #[clap(author = "Mathieu Duponchelle <mathieu@centricular.com>")]
@@ -27,12 +30,10 @@ struct Opts {
 
 #[derive(Clap, Debug)]
 enum SubCommand {
-    /// List all currently-running channels
-    List,
-    /// Control individual channels
-    Channel {
+    /// Create and connect nodes
+    Node {
         #[clap(subcommand)]
-        subcmd: ChannelSubCommand,
+        subcmd: NodeSubCommand,
     },
     /// Control sources
     Source {
@@ -44,94 +45,90 @@ enum SubCommand {
         #[clap(subcommand)]
         subcmd: DestinationSubCommand,
     },
+    /// Control mixers
+    Mixer {
+        #[clap(subcommand)]
+        subcmd: MixerSubCommand,
+    },
 }
 
 #[derive(Clap, Debug)]
-enum ChannelSubCommand {
-    /// Start a channel
-    Start {
-        /// The name of the new channel
-        name: String,
+enum NodeSubCommand {
+    /// Create a new node
+    Create {
+        #[clap(subcommand)]
+        subcmd: CreateNodeSubCommand,
     },
-    /// Stop a channel
-    Stop {
-        /// The id of an existing channel
-        id: uuid::Uuid,
-    },
-    /// Display information about a channel
-    Show {
-        /// The id of an existing channel
-        id: uuid::Uuid,
+    /// Connect two existing nodes
+    Connect {
+        /// The id of the link
+        link_id: String,
+        /// The id of an existing producer node
+        src_id: String,
+        /// The id of an existing consumer node
+        sink_id: String,
     },
 }
+
+#[derive(Clap, Debug)]
+enum CreateNodeSubCommand {
+    /// Create a new source
+    Source {
+        /// Unique identifier for the source
+        id: String,
+        /// URI of the source
+        uri: String,
+    },
+    /// Create a new destination
+    Destination {
+        /// Unique identifier for the destination
+        id: String,
+        /// The URI of the destination
+        uri: String,
+    },
+    /// Create a new mixer
+    Mixer {
+        /// Unique identifier for the mixer
+        id: String,
+    },
+}
+
 #[derive(Clap, Debug)]
 enum SourceSubCommand {
     /// Cue a source for playback
-    Cue {
-        /// The id of an existing channel
-        id: uuid::Uuid,
-        /// The URI of the source
-        uri: String,
-        /// When to cue the source
-        cue_time: DateTime<Utc>,
-        /// When to stop the source.
-        end_time: Option<DateTime<Utc>>,
-    },
-    /// Modify the cue time of a source. If the source is already playing, this has no effect
-    Modify {
-        /// The id of an existing channel
-        id: uuid::Uuid,
-        /// The id of an existing source cued in the channel
-        source_id: uuid::Uuid,
-        /// When to cue the source
-        #[clap(long)]
+    Play {
+        /// The id of an existing source
+        id: String,
+        /// When to cue the source, None is immediate
         cue_time: Option<DateTime<Utc>>,
-        /// When to stop the source.
-        #[clap(long)]
+        /// When to stop the source, None is never
         end_time: Option<DateTime<Utc>>,
-    },
-    /// Remove a source. If the source is currently playing it is stopped
-    Remove {
-        /// The id of an existing channel
-        id: uuid::Uuid,
-        /// The id of an existing source cued in the channel
-        source_id: uuid::Uuid,
     },
 }
 
 #[derive(Clap, Debug)]
 enum DestinationSubCommand {
     /// Cue a destination for streaming
-    Cue {
-        /// The id of an existing channel
-        id: uuid::Uuid,
-        /// The URI of the RTMP destination
-        // TODO: make it family somehow
-        uri: String,
-        /// When to cue the destination
-        cue_time: DateTime<Utc>,
-        /// When to stop the destination.
-        end_time: Option<DateTime<Utc>>,
-    },
-    /// Modify the cue time of a destination. If the destination is already streaming, this has no effect
-    Modify {
-        /// The id of an existing channel
-        id: uuid::Uuid,
-        /// The id of an existing destination cued in the channel
-        destination_id: uuid::Uuid,
-        /// When to cue the destination
-        #[clap(long)]
+    Start {
+        /// The id of an existing destination
+        id: String,
+        /// When to cue the destination, None is immediate
         cue_time: Option<DateTime<Utc>>,
-        /// When to stop the destination.
-        #[clap(long)]
+        /// When to stop the destination, None is never
         end_time: Option<DateTime<Utc>>,
     },
-    /// Remove a destination. If the destination is currently streaming it is stopped
-    Remove {
-        /// The id of an existing channel
-        id: uuid::Uuid,
-        /// The id of an existing destination cued in the channel
-        destination_id: uuid::Uuid,
+}
+
+#[derive(Clap, Debug)]
+enum MixerSubCommand {
+    /// Cue a mixer for .. mixing
+    Start {
+        /// The id of an existing mixer
+        id: String,
+        /// When to cue the mixer, None is immediate
+        cue_time: Option<DateTime<Utc>>,
+        /// When to stop the mixer, None is never
+        end_time: Option<DateTime<Utc>>,
     },
 }
 
@@ -153,65 +150,63 @@ fn main() -> Result<(), Error> {
             Controller::new(opts.server, opts.certificate_file).await?;
 
         let command = match opts.subcmd {
-            SubCommand::List => ControllerCommand::ListChannels {},
-            SubCommand::Channel { subcmd } => match subcmd {
-                ChannelSubCommand::Start { name } => ControllerCommand::StartChannel { name },
-                ChannelSubCommand::Stop { id } => ControllerCommand::StopChannel { id },
-                ChannelSubCommand::Show { id } => ControllerCommand::GetChannelInfo { id },
+            SubCommand::Node { subcmd } => match subcmd {
+                NodeSubCommand::Create { subcmd } => match subcmd {
+                    CreateNodeSubCommand::Source { id, uri } => {
+                        Command::Graph(GraphCommand::CreateSource { id, uri })
+                    }
+                    CreateNodeSubCommand::Destination { id, uri } => {
+                        Command::Graph(GraphCommand::CreateDestination {
+                            id,
+                            family: DestinationFamily::RTMP { uri },
+                        })
+                    }
+                    CreateNodeSubCommand::Mixer { id } => {
+                        Command::Graph(GraphCommand::CreateMixer { id })
+                    }
+                },
+                NodeSubCommand::Connect {
+                    link_id,
+                    src_id,
+                    sink_id,
+                } => Command::Graph(GraphCommand::Connect {
+                    link_id,
+                    src_id,
+                    sink_id,
+                }),
             },
             SubCommand::Source { subcmd } => match subcmd {
-                SourceSubCommand::Cue {
+                SourceSubCommand::Play {
                     id,
-                    uri,
                     cue_time,
                     end_time,
-                } => ControllerCommand::AddSource {
+                } => Command::Node(NodeCommand {
                     id,
-                    uri,
-                    cue_time,
-                    end_time,
-                },
-                SourceSubCommand::Modify {
-                    id,
-                    source_id,
-                    cue_time,
-                    end_time,
-                } => ControllerCommand::ModifySource {
-                    id,
-                    source_id,
-                    cue_time,
-                    end_time,
-                },
-                SourceSubCommand::Remove { id, source_id } => {
-                    ControllerCommand::RemoveSource { id, source_id }
-                }
+                    command: NodeCommands::Source(SourceCommand::Play { cue_time, end_time }),
+                }),
             },
             SubCommand::Destination { subcmd } => match subcmd {
-                DestinationSubCommand::Cue {
+                DestinationSubCommand::Start {
                     id,
-                    uri,
                     cue_time,
                     end_time,
-                } => ControllerCommand::AddDestination {
+                } => Command::Node(NodeCommand {
                     id,
-                    family: DestinationFamily::RTMP { uri },
+                    command: NodeCommands::Destination(DestinationCommand::Start {
+                        cue_time,
+                        end_time,
+                    }),
+                }),
+            },
+            SubCommand::Mixer { subcmd } => match subcmd {
+                MixerSubCommand::Start {
+                    id,
                     cue_time,
                     end_time,
-                },
-                DestinationSubCommand::Modify {
+                } => Command::Node(NodeCommand {
                     id,
-                    destination_id,
-                    cue_time,
-                    end_time,
-                } => ControllerCommand::ModifyDestination {
-                    id,
-                    destination_id,
-                    cue_time,
-                    end_time,
-                },
-                DestinationSubCommand::Remove { id, destination_id } => {
-                    ControllerCommand::RemoveDestination { id, destination_id }
-                }
+                    command: NodeCommands::Mixer(MixerCommand::Start { cue_time, end_time }),
+                }),
             },
         };
 

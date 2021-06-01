@@ -15,7 +15,7 @@ use futures::prelude::*;
 use log::{debug, error, info, trace, warn};
 
 use rtmp_switcher_controlling::controller::{
-    ControllerCommand, ControllerMessage, ServerCommandResult, ServerMessage,
+    Command, CommandResult, ControllerMessage, ServerMessage,
 };
 
 /// Controller handle.
@@ -159,69 +159,11 @@ impl Controller {
                     // shut down once our command has been executed
                     ControllerEvent::WebSocket(msg) => {
                         match msg.result {
-                            ServerCommandResult::Error { message } => {
+                            CommandResult::Error { message } => {
                                 eprintln!("Server error: {}", message);
                             }
-                            ServerCommandResult::ChannelInfo(info) => {
-                                println!("Channel {} with id {:?}", info.name, info.id);
-                                if info.sources.is_empty() {
-                                    println!("  - no cued sources");
-                                } else {
-                                    println!("  - cued sources:");
-                                    for source_info in &info.sources {
-                                        println!(
-                                            "    * {} with uri {} and cue time: {:?}, status: {:?}",
-                                            source_info.id,
-                                            source_info.uri,
-                                            source_info.cue_time,
-                                            source_info.status,
-                                        );
-                                    }
-                                }
-                                if info.destinations.is_empty() {
-                                    println!("  - no cued destinations");
-                                } else {
-                                    println!("  - cued destinations:");
-                                    for destination_info in &info.destinations {
-                                        println!(
-                                            "    * {} with family {:?} and cue time: {:?}, status: {:?}",
-                                            destination_info.id,
-                                            destination_info.family,
-                                            destination_info.cue_time,
-                                            destination_info.status,
-                                        );
-                                    }
-                                }
-                            }
-                            ServerCommandResult::ChannelStarted { id } => {
-                                println!("Started channel with id {:?}", id);
-                            }
-                            ServerCommandResult::ChannelStopped { id } => {
-                                println!("Stopped channel with id {:?}", id);
-                            }
-                            ServerCommandResult::ChannelList { channels } => {
-                                println!("Received channel list:");
-                                for channel in &channels {
-                                    println!("  {:?}", channel);
-                                }
-                            }
-                            ServerCommandResult::SourceAdded { id } => {
-                                println!("Added source with id {:?}", id);
-                            }
-                            ServerCommandResult::SourceModified { id } => {
-                                println!("Modified source with id {:?}", id);
-                            }
-                            ServerCommandResult::SourceRemoved { id } => {
-                                println!("Removed source with id {:?}", id);
-                            }
-                            ServerCommandResult::DestinationAdded { id } => {
-                                println!("Added destination with id {:?}", id);
-                            }
-                            ServerCommandResult::DestinationModified { id } => {
-                                println!("Modified destination with id {:?}", id);
-                            }
-                            ServerCommandResult::DestinationRemoved { id } => {
-                                println!("Removed destination with id {:?}", id);
+                            CommandResult::Success => {
+                                println!("Command ran successfully");
                             }
                         }
 
@@ -291,7 +233,7 @@ impl Controller {
         Ok(ws)
     }
 
-    pub async fn run_command(&mut self, command: ControllerCommand, exit_on_response: bool) {
+    pub async fn run_command(&mut self, command: Command, exit_on_response: bool) {
         let command_id = uuid::Uuid::new_v4();
 
         if exit_on_response {
