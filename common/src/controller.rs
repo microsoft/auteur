@@ -116,35 +116,6 @@ pub enum DestinationFamily {
     RTMP { uri: String },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct SourceInfo {
-    pub id: String,
-    pub uri: String,
-    pub cue_time: DateTime<Utc>,
-    pub end_time: Option<DateTime<Utc>>,
-    pub status: SourceStatus,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct DestinationInfo {
-    pub id: String,
-    pub family: DestinationFamily,
-    pub cue_time: DateTime<Utc>,
-    pub end_time: Option<DateTime<Utc>>,
-    pub status: DestinationStatus,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct ChannelInfo {
-    pub id: String,
-    pub name: String,
-    pub sources: Vec<SourceInfo>,
-    pub destinations: Vec<DestinationInfo>,
-}
-
 /// Messages sent from the the server to the controller.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

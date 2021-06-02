@@ -38,7 +38,7 @@ fn main() -> Result<(), Error> {
 
     gst::init()?;
 
-    let mut system = actix_rt::System::new("RTMP switcher");
+    let system = actix_rt::System::new();
     system.block_on(server::run(cfg))?;
 
     Ok(())

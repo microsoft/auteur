@@ -6,21 +6,14 @@ use crate::node::{CommandMessage, NodeManager};
 
 use anyhow::{format_err, Error};
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use actix::{
-    prelude::*, Actor, ActorContext, ActorFuture, Addr, AsyncContext, Handler, Message,
-    StreamHandler, WrapFuture,
-};
+use actix::prelude::*;
 use actix_web::dev::ConnectionInfo;
 use actix_web_actors::ws;
 
-use chrono::{DateTime, Utc};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{
-    Command, CommandResult, ControllerMessage, GraphCommand, NodeCommand, ServerMessage,
+    Command, CommandResult, ControllerMessage, ServerMessage,
 };
 
 /// Actor that represents an application controller.
@@ -47,7 +40,7 @@ impl Controller {
         &self,
         command_id: uuid::Uuid,
         command: Command,
-    ) -> impl ActorFuture<Actor = Self, Output = ()> {
+    ) -> impl ActorFuture<Self, Output = ()> {
         let node_manager = NodeManager::from_registry();
 
         async move { node_manager.send(CommandMessage { command }).await }
@@ -75,12 +68,11 @@ impl Controller {
     }
 
     /// Handle JSON messages from the controller.
+    #[instrument(level = "trace", name = "controller-message", skip(self, ctx))]
     fn handle_message(&mut self, ctx: &mut ws::WebsocketContext<Self>, text: &str) {
         trace!("Handling message: {}", text);
         match serde_json::from_str::<ControllerMessage>(text) {
             Ok(ControllerMessage { id, command }) => {
-                let node_manager = NodeManager::from_registry();
-
                 ctx.spawn(self.send_command_future(id, command));
             }
             Err(err) => {
@@ -108,16 +100,6 @@ impl Controller {
 
 impl Actor for Controller {
     type Context = ws::WebsocketContext<Self>;
-
-    /// Called once the controller is started.
-    fn started(&mut self, _ctx: &mut Self::Context) {
-        trace!("Started controller {}", self.remote_addr);
-    }
-
-    /// Called when the controller is fully stopped.
-    fn stopped(&mut self, _ctx: &mut Self::Context) {
-        trace!("Controller {} stopped", self.remote_addr);
-    }
 }
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for Controller {

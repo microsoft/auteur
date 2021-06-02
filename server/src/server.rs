@@ -4,17 +4,11 @@
 
 use crate::config::Config;
 use crate::controller::Controller;
-use crate::node::NodeManager;
 
-use actix::Addr;
-use actix::SystemService;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
-use tracing::{error, info};
+use tracing::error;
 
 /// Create Subscriber/Publisher WebSocket actors.
 async fn ws(
@@ -38,11 +32,9 @@ async fn ws(
 /// Start the server based on the passed `Config`.
 pub async fn run(cfg: Config) -> Result<(), anyhow::Error> {
     let server = HttpServer::new(move || {
-        let cors = actix_cors::Cors::default().allow_any_origin().max_age(3600);
-
         App::new()
             .wrap(actix_web::middleware::Logger::default())
-            .wrap(cors)
+            .wrap(tracing_actix_web::TracingLogger::default())
             .route("/ws/{mode:(control)}", web::get().to(ws))
     });
 

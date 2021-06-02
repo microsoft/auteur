@@ -3,11 +3,12 @@ use std::mem;
 use std::sync::{atomic, Arc, Mutex};
 
 use actix::prelude::*;
+use actix::WeakRecipient;
 use futures::prelude::*;
 use gst::prelude::*;
 
 use anyhow::{anyhow, Error};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct StreamProducer {
@@ -207,7 +208,7 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
                     EventView::Latency(ev) => {
                         if let Some(parent) = pad.parent() {
                             let latency = ev.latency();
-                            debug!(appsink = %parent.name(), latency = %latency, "Latency updated");
+                            trace!(appsink = %parent.name(), latency = %latency, "Latency updated");
 
                             let mut consumers = consumers_clone.lock().unwrap();
                             consumers.current_latency = Some(latency);
@@ -310,61 +311,70 @@ impl Message for BusMessage {
 }
 
 #[derive(Debug)]
-pub struct PipelineManager(gst::Pipeline, Recipient<ErrorMessage>);
+pub struct PipelineManager {
+    pipeline: gst::Pipeline,
+    recipient: actix::WeakRecipient<ErrorMessage>,
+    id: String,
+}
 
 impl Actor for PipelineManager {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        self.0.use_clock(Some(&gst::SystemClock::obtain()));
-        self.0.set_start_time(gst::CLOCK_TIME_NONE);
-        self.0.set_base_time(gst::ClockTime::from(0));
+        self.pipeline.use_clock(Some(&gst::SystemClock::obtain()));
+        self.pipeline.set_start_time(gst::CLOCK_TIME_NONE);
+        self.pipeline.set_base_time(gst::ClockTime::from(0));
 
-        let bus = self.0.bus().expect("Pipeline with no bus");
+        let bus = self.pipeline.bus().expect("Pipeline with no bus");
         let bus_stream = bus.stream();
         Self::add_stream(bus_stream.map(BusMessage), ctx);
     }
 }
 
 impl StreamHandler<BusMessage> for PipelineManager {
-    fn handle(&mut self, msg: BusMessage, ctx: &mut Context<Self>) {
+    #[instrument(name = "Handling GStreamer bus message", level = "trace", skip(self, msg, _ctx), fields(id = %self.id, source = msg.0.src().as_ref().map(|src| src.path_string()).as_deref().unwrap_or("UNKNOWN")))]
+    fn handle(&mut self, msg: BusMessage, _ctx: &mut Context<Self>) {
         use gst::MessageView;
 
         match msg.0.view() {
             MessageView::Latency(_) => {
                 if let Some(src) = msg.0.src() {
-                    if &src == self.0.upcast_ref::<gst::Object>() || src.has_as_ancestor(&self.0) {
-                        trace!("Pipeline updated latency");
-                        self.0.call_async(|pipeline| {
+                    if &src == self.pipeline.upcast_ref::<gst::Object>()
+                        || src.has_as_ancestor(&self.pipeline)
+                    {
+                        trace!("Pipeline for node {} updated latency", self.id);
+                        self.pipeline.call_async(|pipeline| {
                             let _ = pipeline.recalculate_latency();
                         });
                     }
                 }
             }
             MessageView::Error(err) => {
-                let src = err.src();
-                let dbg = err.debug();
-                let err = err.error();
+                if let Some(recipient) = self.recipient.upgrade() {
+                    let src = err.src();
+                    let dbg = err.debug();
+                    let err = err.error();
 
-                if let Some(dbg) = dbg {
-                    let _ = self.1.do_send(ErrorMessage(format!(
-                        "Got error from {}: {} ({})",
-                        src.as_ref()
-                            .map(|src| src.path_string())
-                            .as_deref()
-                            .unwrap_or("UNKNOWN"),
-                        err,
-                        dbg
-                    )));
-                } else {
-                    let _ = self.1.do_send(ErrorMessage(format!(
-                        "Got error from {}: {}",
-                        src.as_ref()
-                            .map(|src| src.path_string())
-                            .as_deref()
-                            .unwrap_or("UNKNOWN"),
-                        err
-                    )));
+                    if let Some(dbg) = dbg {
+                        let _ = recipient.do_send(ErrorMessage(format!(
+                            "Got error from {}: {} ({})",
+                            src.as_ref()
+                                .map(|src| src.path_string())
+                                .as_deref()
+                                .unwrap_or("UNKNOWN"),
+                            err,
+                            dbg
+                        )));
+                    } else {
+                        let _ = recipient.do_send(ErrorMessage(format!(
+                            "Got error from {}: {}",
+                            src.as_ref()
+                                .map(|src| src.path_string())
+                                .as_deref()
+                                .unwrap_or("UNKNOWN"),
+                            err
+                        )));
+                    }
                 }
             }
             _ => (),
@@ -373,14 +383,19 @@ impl StreamHandler<BusMessage> for PipelineManager {
 }
 
 impl PipelineManager {
-    pub fn new(pipeline: gst::Pipeline, recipient: Recipient<ErrorMessage>) -> Self {
-        Self(pipeline, recipient)
+    pub fn new(pipeline: gst::Pipeline, recipient: WeakRecipient<ErrorMessage>, id: &str) -> Self {
+        Self {
+            pipeline,
+            recipient,
+            id: id.to_string(),
+        }
     }
 }
 
 impl Drop for PipelineManager {
     fn drop(&mut self) {
-        let _ = self.0.set_state(gst::State::Null);
+        debug!("tearing down pipeline for node {}", self.id);
+        let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
 
@@ -389,4 +404,19 @@ pub struct ErrorMessage(pub String);
 
 impl Message for ErrorMessage {
     type Result = ();
+}
+
+#[derive(Debug)]
+pub struct StopManagerMessage;
+
+impl Message for StopManagerMessage {
+    type Result = ();
+}
+
+impl Handler<StopManagerMessage> for PipelineManager {
+    type Result = ();
+
+    fn handle(&mut self, _msg: StopManagerMessage, ctx: &mut Context<Self>) {
+        ctx.stop();
+    }
 }

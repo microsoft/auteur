@@ -2,14 +2,16 @@ use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{
     DestinationCommand, DestinationFamily, DestinationStatus,
 };
 
 use crate::node::{ConsumerMessage, DestinationCommandMessage, NodeManager};
-use crate::utils::{make_element, ErrorMessage, PipelineManager, StreamProducer};
+use crate::utils::{
+    make_element, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
+};
 
 struct ConsumerSlot {
     id: String,
@@ -35,17 +37,23 @@ pub struct Destination {
 impl Actor for Destination {
     type Context = Context<Self>;
 
+    #[instrument(level = "debug", name = "starting", skip(self, ctx), fields(id = %self.id))]
     fn started(&mut self, ctx: &mut Self::Context) {
-        info!("Started destination {}", self.id);
-
         self.pipeline_manager = Some(
-            PipelineManager::new(self.pipeline.clone(), ctx.address().recipient().clone()).start(),
+            PipelineManager::new(
+                self.pipeline.clone(),
+                ctx.address().downgrade().recipient(),
+                &self.id,
+            )
+            .start(),
         );
     }
 
-    /// Called once the destination is stopped
+    #[instrument(level = "debug", name = "stopping", skip(self, _ctx), fields(id = %self.id))]
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        let _ = self.pipeline_manager.take();
+        if let Some(manager) = self.pipeline_manager.take() {
+            let _ = manager.do_send(StopManagerMessage);
+        }
 
         if let Some(slot) = self.consumer_slot.take() {
             slot.video_producer.remove_consumer(&slot.id);
@@ -55,8 +63,6 @@ impl Actor for Destination {
         NodeManager::from_registry().do_send(DestinationStoppedMessage {
             id: self.id.clone(),
         });
-
-        info!("Stopped destination {}", self.id);
     }
 }
 
@@ -94,6 +100,7 @@ impl Destination {
         }
     }
 
+    #[instrument(level = "debug", name = "streaming", skip(self, ctx), fields(id = %self.id))]
     fn start_rtmp_pipeline(&mut self, ctx: &mut Context<Self>, uri: &String) -> Result<(), Error> {
         let vconv = make_element("videoconvert", None)?;
         let timecodestamper = make_element("timecodestamper", None)?;
@@ -175,13 +182,13 @@ impl Destination {
         ])?;
 
         if let Some(slot) = &self.consumer_slot {
-            debug!("destination {} connecting to producers", self.id);
+            debug!("connecting to producers");
             slot.video_producer
                 .add_consumer(&self.video_appsrc, &slot.id);
             slot.audio_producer
                 .add_consumer(&self.audio_appsrc, &slot.id);
         } else {
-            debug!("destination {} started but not yet connected", self.id);
+            debug!("started but not yet connected");
         }
 
         self.status = DestinationStatus::Streaming;
@@ -200,9 +207,10 @@ impl Destination {
         Ok(())
     }
 
+    #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
     fn schedule_state(&mut self, ctx: &mut Context<Self>) {
         if let Some(handle) = self.state_handle {
-            trace!("{} cancelling current state scheduling", self.id);
+            trace!("cancelling current state scheduling");
             ctx.cancel_future(handle);
         }
 
@@ -218,13 +226,13 @@ impl Destination {
             let timeout = next_time - now;
 
             if timeout > chrono::Duration::zero() {
-                trace!("{} not ready to progress to next state", self.id);
+                trace!("not ready to progress to next state");
 
                 self.state_handle = Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
                     s.schedule_state(ctx);
                 }));
             } else {
-                trace!("{} progressing to next state", self.id);
+                trace!("progressing to next state");
                 if let Err(err) = match self.status {
                     DestinationStatus::Initial => match self.family.clone() {
                         DestinationFamily::RTMP { uri } => self.start_rtmp_pipeline(ctx, &uri),
@@ -242,10 +250,11 @@ impl Destination {
                 }
             }
         } else {
-            trace!("{} going back to sleep", self.id);
+            trace!("going back to sleep");
         }
     }
 
+    #[instrument(level = "trace", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn start(
         &mut self,
         ctx: &mut Context<Self>,
@@ -277,6 +286,49 @@ impl Destination {
 
         Ok(())
     }
+
+    #[instrument(level = "debug", name = "connecting", skip(self, video_producer, audio_producer), fields(id = %self.id))]
+    fn connect(
+        &mut self,
+        link_id: &str,
+        video_producer: &StreamProducer,
+        audio_producer: &StreamProducer,
+    ) -> Result<(), Error> {
+        if self.consumer_slot.is_some() {
+            return Err(anyhow!("destination already has a producer"));
+        }
+
+        if self.status == DestinationStatus::Streaming {
+            debug!("destination {} connecting to producers", self.id);
+            video_producer.add_consumer(&self.video_appsrc, &link_id);
+            audio_producer.add_consumer(&self.audio_appsrc, &link_id);
+        }
+
+        self.consumer_slot = Some(ConsumerSlot {
+            id: link_id.to_string(),
+            video_producer: video_producer.clone(),
+            audio_producer: audio_producer.clone(),
+        });
+
+        Ok(())
+    }
+
+    #[instrument(level = "debug", name = "disconnecting", skip(self), fields(id = %self.id))]
+    fn disconnect(&mut self, link_id: &str) -> Result<(), Error> {
+        if let Some(slot) = self.consumer_slot.take() {
+            if slot.id == link_id {
+                slot.video_producer.remove_consumer(&slot.id);
+                slot.audio_producer.remove_consumer(&slot.id);
+                Ok(())
+            } else {
+                let res = Err(anyhow!("invalid slot id {}, current: {}", link_id, slot.id));
+                self.consumer_slot = Some(slot);
+                return res;
+            }
+        } else {
+            Err(anyhow!("can't disconnect, not connected"))
+        }
+    }
 }
 
 impl Handler<ConsumerMessage> for Destination {
@@ -288,32 +340,8 @@ impl Handler<ConsumerMessage> for Destination {
                 link_id,
                 video_producer,
                 audio_producer,
-            } => {
-                if self.consumer_slot.is_some() {
-                    return MessageResult(Err(anyhow!("destination already has a producer")));
-                }
-
-                if self.status == DestinationStatus::Streaming {
-                    debug!("destination {} connecting to producers", self.id);
-                    video_producer.add_consumer(&self.video_appsrc, &link_id);
-                    audio_producer.add_consumer(&self.audio_appsrc, &link_id);
-                }
-
-                self.consumer_slot = Some(ConsumerSlot {
-                    id: link_id,
-                    video_producer,
-                    audio_producer,
-                });
-
-                MessageResult(Ok(()))
-            }
-            ConsumerMessage::Disconnect { .. } => {
-                if let Some(slot) = self.consumer_slot.take() {
-                    slot.video_producer.remove_consumer(&slot.id);
-                    slot.audio_producer.remove_consumer(&slot.id);
-                }
-                MessageResult(Ok(()))
-            }
+            } => MessageResult(self.connect(&link_id, &video_producer, &audio_producer)),
+            ConsumerMessage::Disconnect { slot_id } => MessageResult(self.disconnect(&slot_id)),
         }
     }
 }
@@ -324,10 +352,9 @@ impl Handler<DestinationCommandMessage> for Destination {
     fn handle(&mut self, msg: DestinationCommandMessage, ctx: &mut Context<Self>) -> Self::Result {
         match msg.command {
             DestinationCommand::Start { cue_time, end_time } => {
-                let _ = self.start(ctx, cue_time, end_time);
+                MessageResult(self.start(ctx, cue_time, end_time))
             }
         }
-        MessageResult(Ok(()))
     }
 }
 

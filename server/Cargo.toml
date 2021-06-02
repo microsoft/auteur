@@ -13,14 +13,16 @@ gst-app = { package = "gstreamer-app", git = "https://gitlab.freedesktop.org/gst
 gst-video = { package = "gstreamer-video", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs", features = ["v1_18"] }
 glib = "0.10"
 futures = "0.3"
-actix = "0.10"
-actix-rt = "1"
-actix-web = { version = "3", features = ["openssl"] }
-actix-web-actors = "3"
-actix-service = "1"
-actix-files = "0.4"
-actix-cors = "0.5"
+actix = "0.11"
+actix-rt = "2"
+actix-web = { version = "4.0.0-beta.5", features = ["openssl"] }
+actix-web-actors = "4.0.0-beta.4"
+actix-service = "=2.0.0-beta.5"
+actix-files = "0.6.0-beta.4"
+actix-http = "=3.0.0-beta.5"
+actix-web-httpauth = "0.6.0-beta.1"
 openssl = "0.10"
+tracing-actix-web = "0.4.0-beta.1"
 tracing = { version = "0.1", features = ["log"] }
 tracing-futures = { version = "0.1", features = ["std-future"] }
 tracing-subscriber = { version = "0.2", features = ["registry", "env-filter"] }
