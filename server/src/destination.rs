@@ -110,6 +110,7 @@ impl Destination {
         let venc_queue = make_element("queue", None)?;
 
         let aconv = make_element("audioconvert", None)?;
+        let aresample = make_element("audioresample", None)?;
         let aenc = make_element("faac", None)?;
         let aenc_queue = make_element("queue", None)?;
 
@@ -127,6 +128,7 @@ impl Destination {
             &venc_queue,
             self.audio_appsrc.upcast_ref(),
             &aconv,
+            &aresample,
             &aenc,
             &aenc_queue,
             &mux,
@@ -176,6 +178,7 @@ impl Destination {
         gst::Element::link_many(&[
             self.audio_appsrc.upcast_ref(),
             &aconv,
+            &aresample,
             &aenc,
             &aenc_queue,
             &mux,

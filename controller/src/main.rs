@@ -12,7 +12,7 @@ use controller::Controller;
 
 use rtmp_switcher_controlling::controller::{
     Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, NodeCommand,
-    NodeCommands, SourceCommand,
+    NodeCommands, SourceCommand, StreamConfig,
 };
 
 #[derive(Clap, Debug)]
@@ -90,6 +90,12 @@ enum CreateNodeSubCommand {
     Mixer {
         /// Unique identifier for the mixer
         id: String,
+        /// Width of the output picture
+        width: i32,
+        /// Height of the output picture
+        height: i32,
+        /// sample rate of the output audio
+        sample_rate: i32,
     },
 }
 
@@ -161,9 +167,19 @@ fn main() -> Result<(), Error> {
                             family: DestinationFamily::RTMP { uri },
                         })
                     }
-                    CreateNodeSubCommand::Mixer { id } => {
-                        Command::Graph(GraphCommand::CreateMixer { id })
-                    }
+                    CreateNodeSubCommand::Mixer {
+                        id,
+                        width,
+                        height,
+                        sample_rate,
+                    } => Command::Graph(GraphCommand::CreateMixer {
+                        id,
+                        config: StreamConfig {
+                            width,
+                            height,
+                            sample_rate,
+                        },
+                    }),
                 },
                 NodeSubCommand::Connect {
                     link_id,

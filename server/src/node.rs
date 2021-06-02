@@ -7,7 +7,7 @@ use anyhow::{anyhow, Error};
 use futures::prelude::*;
 use rtmp_switcher_controlling::controller::{
     Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, NodeCommand,
-    NodeCommands, SourceCommand,
+    NodeCommands, SourceCommand, StreamConfig,
 };
 use std::collections::HashMap;
 use tracing::{debug, info, instrument, trace, warn};
@@ -176,12 +176,12 @@ impl NodeManager {
         Ok(())
     }
 
-    fn create_mixer(&mut self, id: &str) -> Result<(), Error> {
+    fn create_mixer(&mut self, id: &str, config: StreamConfig) -> Result<(), Error> {
         if self.nodes.contains_key(id) {
             return Err(anyhow!("A node already exists with id {}", id));
         }
 
-        let mixer = Mixer::new(id);
+        let mixer = Mixer::new(id, config);
         let addr = mixer.start();
 
         self.nodes.insert(id.to_string(), Node::Mixer(addr.clone()));
@@ -382,8 +382,8 @@ impl Handler<CommandMessage> for NodeManager {
                 GraphCommand::CreateDestination { id, family } => {
                     Box::pin(actix::fut::ready(self.create_destination(&id, &family)))
                 }
-                GraphCommand::CreateMixer { id } => {
-                    Box::pin(actix::fut::ready(self.create_mixer(&id)))
+                GraphCommand::CreateMixer { id, config } => {
+                    Box::pin(actix::fut::ready(self.create_mixer(&id, config)))
                 }
             },
             Command::Node(cmd) => match cmd {

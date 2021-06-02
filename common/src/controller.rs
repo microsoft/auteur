@@ -51,6 +51,15 @@ pub struct NodeCommand {
     pub command: NodeCommands,
 }
 
+// Simplistic, will be extended
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct StreamConfig {
+    pub width: i32,
+    pub height: i32,
+    pub sample_rate: i32,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphCommand {
@@ -64,6 +73,7 @@ pub enum GraphCommand {
     },
     CreateMixer {
         id: String,
+        config: StreamConfig,
     },
     Connect {
         link_id: String,

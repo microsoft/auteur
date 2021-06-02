@@ -73,47 +73,28 @@ impl Source {
         audio_producer: &StreamProducer,
     ) -> Result<gst::Element, Error> {
         if is_video {
-            let vscale = make_element("videoscale", None)?;
-            let capsfilter = make_element("capsfilter", None)?;
-            capsfilter
-                .set_property(
-                    "caps",
-                    &gst::Caps::builder("video/x-raw")
-                        .field("width", &1920)
-                        .field("height", &1080)
-                        .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
-                        .build(),
-                )
-                .unwrap();
-            pipeline.add_many(&[&vscale, &capsfilter])?;
+            let deinterlace = make_element("deinterlace", None)?;
+
+            pipeline.add(&deinterlace)?;
 
             let appsink: &gst::Element = video_producer.appsink().upcast_ref();
 
             debug!(appsink = %appsink.name(), "linking video stream");
 
-            vscale.sync_state_with_parent()?;
-            capsfilter.sync_state_with_parent()?;
+            deinterlace.sync_state_with_parent()?;
 
-            let sinkpad = vscale.static_pad("sink").unwrap();
+            let sinkpad = deinterlace.static_pad("sink").unwrap();
             pad.link(&sinkpad)?;
-            gst::Element::link_many(&[&vscale, &capsfilter, &appsink])?;
+            deinterlace.link(appsink)?;
 
             Ok(appsink.clone())
         } else {
-            let audioconvert = make_element("audioconvert", None)?;
-            let audioresample = make_element("audioresample", None)?;
-            pipeline.add_many(&[&audioconvert, &audioresample])?;
-
             let appsink: &gst::Element = audio_producer.appsink().upcast_ref();
 
             debug!(appsink = %appsink.name(), "linking audio stream to appsink");
 
-            audioconvert.sync_state_with_parent()?;
-            audioresample.sync_state_with_parent()?;
-
-            let sinkpad = audioconvert.static_pad("sink").unwrap();
+            let sinkpad = appsink.static_pad("sink").unwrap();
             pad.link(&sinkpad)?;
-            gst::Element::link_many(&[&audioconvert, &audioresample, &appsink])?;
 
             Ok(appsink.clone())
         }

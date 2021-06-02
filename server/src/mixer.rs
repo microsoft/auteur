@@ -3,9 +3,9 @@ use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
 use std::collections::HashMap;
-use tracing::{error, instrument, trace};
+use tracing::{debug, error, instrument, trace};
 
-use rtmp_switcher_controlling::controller::{MixerCommand, MixerStatus};
+use rtmp_switcher_controlling::controller::{MixerCommand, MixerStatus, StreamConfig};
 
 use crate::node::{ConsumerMessage, GetProducerMessage, MixerCommandMessage, NodeManager};
 use crate::utils::{
@@ -34,6 +34,8 @@ pub struct Mixer {
     consumer_slots: HashMap<String, ConsumerSlot>,
     audio_mixer: Option<gst::Element>,
     video_mixer: Option<gst::Element>,
+
+    config: StreamConfig,
 
     state_handle: Option<SpawnHandle>,
 }
@@ -73,7 +75,7 @@ impl Actor for Mixer {
 }
 
 impl Mixer {
-    pub fn new(id: &str) -> Self {
+    pub fn new(id: &str, config: StreamConfig) -> Self {
         let pipeline = gst::Pipeline::new(None);
 
         let audio_appsink = gst::ElementFactory::make("appsink", None)
@@ -102,6 +104,7 @@ impl Mixer {
             consumer_slots: HashMap::new(),
             audio_mixer: None,
             video_mixer: None,
+            config,
             state_handle: None,
         }
     }
@@ -118,19 +121,35 @@ impl Mixer {
         amixer: &gst::Element,
         mixer_id: &str,
         id: &str,
+        config: &StreamConfig,
     ) -> Result<(), Error> {
         let video_bin = gst::Bin::new(None);
         let audio_bin = gst::Bin::new(None);
 
         let aconv = make_element("audioconvert", None)?;
-        let aresample = make_element("audioconvert", None)?;
+        let aresample = make_element("audioresample", None)?;
         let aqueue = make_element("queue", None)?;
         let vqueue = make_element("queue", None)?;
+
+        // FIXME: https://gitlab.freedesktop.org/gstreamer/gst-plugins-base/-/merge_requests/1156
+        let vconv = make_element("videoconvert", None)?;
+        let vscale = make_element("videoscale", None)?;
+        let vcapsfilter = make_element("capsfilter", None)?;
+        vcapsfilter
+            .set_property(
+                "caps",
+                &gst::Caps::builder("video/x-raw")
+                    .field("width", &config.width)
+                    .field("height", &config.height)
+                    .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                    .build(),
+            )
+            .unwrap();
 
         let vappsrc_elem: &gst::Element = slot.video_appsrc.upcast_ref();
         let aappsrc_elem: &gst::Element = slot.audio_appsrc.upcast_ref();
 
-        video_bin.add_many(&[vappsrc_elem, &vqueue])?;
+        video_bin.add_many(&[vappsrc_elem, &vconv, &vscale, &vcapsfilter, &vqueue])?;
 
         audio_bin.add_many(&[aappsrc_elem, &aconv, &aresample, &aqueue])?;
 
@@ -151,7 +170,7 @@ impl Mixer {
         let vmixer_pad = vmixer.request_pad_simple("sink_%u").unwrap();
 
         gst::Element::link_many(&[aappsrc_elem, &aconv, &aresample, &aqueue])?;
-        gst::Element::link_many(&[vappsrc_elem, &vqueue])?;
+        gst::Element::link_many(&[vappsrc_elem, &vconv, &vscale, &vcapsfilter, &vqueue])?;
 
         let srcpad = audio_bin.static_pad("src").unwrap();
         srcpad.link(&amixer_pad).unwrap();
@@ -173,9 +192,6 @@ impl Mixer {
         let vsrc = make_element("videotestsrc", None)?;
         let vqueue = make_element("queue", None)?;
         let vmixer = make_element("compositor", Some("compositor"))?;
-        let vconv = make_element("videoconvert", None)?;
-        let vdeinterlace = make_element("deinterlace", None)?;
-        let vscale = make_element("videoscale", None)?;
         let vcapsfilter = make_element("capsfilter", None)?;
 
         let asrc = make_element("audiotestsrc", None)?;
@@ -193,12 +209,14 @@ impl Mixer {
             )
             .unwrap();
 
+        debug!("stream config: {:?}", self.config);
+
         vcapsfilter
             .set_property(
                 "caps",
                 &gst::Caps::builder("video/x-raw")
-                    .field("width", &1920)
-                    .field("height", &1080)
+                    .field("width", &self.config.width)
+                    .field("height", &self.config.height)
                     .field("framerate", &gst::Fraction::new(30, 1))
                     .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
                     .field("format", &"I420")
@@ -222,7 +240,7 @@ impl Mixer {
                 &gst::Caps::builder("audio/x-raw")
                     .field("channels", &2)
                     .field("format", &"S16LE")
-                    .field("rate", &44100)
+                    .field("rate", &self.config.sample_rate)
                     .build(),
             )
             .unwrap();
@@ -231,9 +249,6 @@ impl Mixer {
             &vsrc,
             &vqueue,
             &vmixer,
-            &vconv,
-            &vdeinterlace,
-            &vscale,
             &vcapsfilter,
             &asrc,
             &aqueue,
@@ -245,9 +260,6 @@ impl Mixer {
             &vsrc,
             &vqueue,
             &vmixer,
-            &vconv,
-            &vdeinterlace,
-            &vscale,
             &vcapsfilter,
             self.video_producer.appsink().upcast_ref(),
         ])?;
@@ -263,7 +275,15 @@ impl Mixer {
         self.status = MixerStatus::Mixing;
 
         for (id, slot) in self.consumer_slots.iter_mut() {
-            Mixer::connect_slot(&self.pipeline, slot, &vmixer, &amixer, &self.id, id)?;
+            Mixer::connect_slot(
+                &self.pipeline,
+                slot,
+                &vmixer,
+                &amixer,
+                &self.id,
+                id,
+                &self.config,
+            )?;
         }
 
         self.video_mixer = Some(vmixer);
@@ -410,6 +430,7 @@ impl Mixer {
                 &amixer,
                 &self.id,
                 &link_id,
+                &self.config,
             ) {
                 return Err(err);
             }
