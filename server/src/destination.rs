@@ -68,14 +68,16 @@ impl Actor for Destination {
 
 impl Destination {
     pub fn new(id: &str, family: &DestinationFamily) -> Self {
-        let video_appsrc = gst::ElementFactory::make("appsrc", None)
-            .unwrap()
-            .downcast::<gst_app::AppSrc>()
-            .unwrap();
-        let audio_appsrc = gst::ElementFactory::make("appsrc", None)
-            .unwrap()
-            .downcast::<gst_app::AppSrc>()
-            .unwrap();
+        let video_appsrc =
+            gst::ElementFactory::make("appsrc", Some(&format!("destination-video-appsrc-{}", id)))
+                .unwrap()
+                .downcast::<gst_app::AppSrc>()
+                .unwrap();
+        let audio_appsrc =
+            gst::ElementFactory::make("appsrc", Some(&format!("destination-audio-appsrc-{}", id)))
+                .unwrap()
+                .downcast::<gst_app::AppSrc>()
+                .unwrap();
 
         for appsrc in &[&video_appsrc, &audio_appsrc] {
             appsrc.set_format(gst::Format::Time);

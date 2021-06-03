@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, instrument, trace};
 
-use rtmp_switcher_controlling::controller::{MixerCommand, MixerStatus, StreamConfig};
+use rtmp_switcher_controlling::controller::{MixerCommand, MixerConfig, MixerStatus};
 
 use crate::node::{ConsumerMessage, GetProducerMessage, MixerCommandMessage, NodeManager};
 use crate::utils::{
@@ -24,6 +24,8 @@ struct ConsumerSlot {
 
     video_bin: Option<gst::Bin>,
     audio_bin: Option<gst::Bin>,
+
+    video_capsfilter: Option<gst::Element>,
 }
 
 #[derive(Debug)]
@@ -45,10 +47,14 @@ pub struct Mixer {
     audio_mixer: Option<gst::Element>,
     video_mixer: Option<gst::Element>,
 
-    config: StreamConfig,
+    config: MixerConfig,
 
     mixing_state: Arc<Mutex<MixingState>>,
     fallback_timeout: gst::ClockTime,
+
+    audio_capsfilter: Option<gst::Element>,
+    base_plate_capsfilter: Option<gst::Element>,
+    video_capsfilter: Option<gst::Element>,
 
     state_handle: Option<SpawnHandle>,
 }
@@ -88,18 +94,20 @@ impl Actor for Mixer {
 }
 
 impl Mixer {
-    pub fn new(id: &str, config: StreamConfig) -> Self {
+    pub fn new(id: &str, config: MixerConfig) -> Self {
         let pipeline = gst::Pipeline::new(None);
 
-        let audio_appsink = gst::ElementFactory::make("appsink", None)
-            .unwrap()
-            .downcast::<gst_app::AppSink>()
-            .unwrap();
+        let audio_appsink =
+            gst::ElementFactory::make("appsink", Some(&format!("mixer-audio-appsink-{}", id)))
+                .unwrap()
+                .downcast::<gst_app::AppSink>()
+                .unwrap();
 
-        let video_appsink = gst::ElementFactory::make("appsink", None)
-            .unwrap()
-            .downcast::<gst_app::AppSink>()
-            .unwrap();
+        let video_appsink =
+            gst::ElementFactory::make("appsink", Some(&format!("mixer-video-appsink-{}", id)))
+                .unwrap()
+                .downcast::<gst_app::AppSink>()
+                .unwrap();
 
         pipeline
             .add_many(&[&audio_appsink, &video_appsink])
@@ -125,6 +133,9 @@ impl Mixer {
                 showing_base_plate: true,
             })),
             fallback_timeout: fallback_timeout as u64 * gst::MSECOND,
+            audio_capsfilter: None,
+            video_capsfilter: None,
+            base_plate_capsfilter: None,
             state_handle: None,
         }
     }
@@ -141,13 +152,14 @@ impl Mixer {
         amixer: &gst::Element,
         mixer_id: &str,
         id: &str,
-        config: &StreamConfig,
+        config: &MixerConfig,
     ) -> Result<(), Error> {
         let video_bin = gst::Bin::new(None);
         let audio_bin = gst::Bin::new(None);
 
         let aconv = make_element("audioconvert", None)?;
         let aresample = make_element("audioresample", None)?;
+        let acapsfilter = make_element("capsfilter", None)?;
         let aqueue = make_element("queue", None)?;
         let vqueue = make_element("queue", None)?;
 
@@ -166,12 +178,23 @@ impl Mixer {
             )
             .unwrap();
 
+        acapsfilter
+            .set_property(
+                "caps",
+                &gst::Caps::builder("audio/x-raw")
+                    .field("channels", &2)
+                    .field("format", &"S16LE")
+                    .field("rate", &96000)
+                    .build(),
+            )
+            .unwrap();
+
         let vappsrc_elem: &gst::Element = slot.video_appsrc.upcast_ref();
         let aappsrc_elem: &gst::Element = slot.audio_appsrc.upcast_ref();
 
         video_bin.add_many(&[vappsrc_elem, &vconv, &vscale, &vcapsfilter, &vqueue])?;
 
-        audio_bin.add_many(&[aappsrc_elem, &aconv, &aresample, &aqueue])?;
+        audio_bin.add_many(&[aappsrc_elem, &aconv, &aresample, &acapsfilter, &aqueue])?;
 
         pipeline.add_many(&[&video_bin, &audio_bin])?;
 
@@ -189,7 +212,7 @@ impl Mixer {
         let amixer_pad = amixer.request_pad_simple("sink_%u").unwrap();
         let vmixer_pad = vmixer.request_pad_simple("sink_%u").unwrap();
 
-        gst::Element::link_many(&[aappsrc_elem, &aconv, &aresample, &aqueue])?;
+        gst::Element::link_many(&[aappsrc_elem, &aconv, &aresample, &acapsfilter, &aqueue])?;
         gst::Element::link_many(&[vappsrc_elem, &vconv, &vscale, &vcapsfilter, &vqueue])?;
 
         let srcpad = audio_bin.static_pad("src").unwrap();
@@ -200,6 +223,7 @@ impl Mixer {
 
         slot.audio_bin = Some(audio_bin);
         slot.video_bin = Some(video_bin);
+        slot.video_capsfilter = Some(vcapsfilter);
 
         slot.video_producer.add_consumer(&slot.video_appsrc, id);
         slot.audio_producer.add_consumer(&slot.audio_appsrc, id);
@@ -208,7 +232,7 @@ impl Mixer {
     }
 
     #[instrument(level = "debug", name = "building base plate", skip(self), fields(id = %self.id))]
-    fn build_base_plate(&self) -> Result<gst::Element, Error> {
+    fn build_base_plate(&mut self) -> Result<gst::Element, Error> {
         let bin = gst::Bin::new(None);
 
         let ghost = match self.config.fallback_image.as_ref() {
@@ -216,9 +240,12 @@ impl Mixer {
                 let filesrc = make_element("filesrc", None)?;
                 let decodebin = make_element("decodebin3", None)?;
                 let vconv = make_element("videoconvert", None)?;
+                let imagefreeze = make_element("imagefreeze", None)?;
+
+                /* We have to rescale after imagefreeze for now, as we might
+                 * need to update the resolution dynamically */
                 let vscale = make_element("videoscale", None)?;
                 let capsfilter = make_element("capsfilter", None)?;
-                let imagefreeze = make_element("imagefreeze", None)?;
 
                 filesrc.set_property("location", path).unwrap();
                 imagefreeze.set_property("is-live", &true).unwrap();
@@ -236,25 +263,27 @@ impl Mixer {
                 bin.add_many(&[
                     &filesrc,
                     &decodebin,
+                    &imagefreeze,
                     &vconv,
                     &vscale,
                     &capsfilter,
-                    &imagefreeze,
                 ])?;
 
-                let vconv_clone = vconv.downgrade();
+                let imagefreeze_clone = imagefreeze.downgrade();
                 decodebin.connect_pad_added(move |_bin, pad| {
-                    if let Some(vconv) = vconv_clone.upgrade() {
-                        let sinkpad = vconv.static_pad("sink").unwrap();
+                    if let Some(imagefreeze) = imagefreeze_clone.upgrade() {
+                        let sinkpad = imagefreeze.static_pad("sink").unwrap();
                         pad.link(&sinkpad).unwrap();
                     }
                 });
 
                 filesrc.link(&decodebin)?;
 
-                gst::Element::link_many(&[&vconv, &vscale, &capsfilter, &imagefreeze])?;
+                gst::Element::link_many(&[&imagefreeze, &vconv, &vscale, &capsfilter])?;
 
-                gst::GhostPad::with_target(Some("src"), &imagefreeze.static_pad("src").unwrap())
+                self.base_plate_capsfilter = Some(capsfilter.clone());
+
+                gst::GhostPad::with_target(Some("src"), &capsfilter.static_pad("src").unwrap())
                     .unwrap()
             }
             None => {
@@ -326,9 +355,12 @@ impl Mixer {
         let vcapsfilter = make_element("capsfilter", None)?;
 
         let asrc = make_element("audiotestsrc", None)?;
+        let asrccapsfilter = make_element("capsfilter", None)?;
         let aqueue = make_element("queue", None)?;
         let amixer = make_element("audiomixer", Some("audiomixer"))?;
         let acapsfilter = make_element("capsfilter", None)?;
+        let aresample = make_element("audioresample", None)?;
+        let aresamplecapsfilter = make_element("capsfilter", None)?;
 
         vmixer.set_property_from_str("background", "black");
         vmixer
@@ -363,12 +395,41 @@ impl Mixer {
                 &gst_base::AggregatorStartTimeSelection::First,
             )
             .unwrap();
+
+        // FIXME: audiomixer doesn't deal very well with audio rate changes,
+        // for now the solution is to simply pick a very high sample rate
+        // (96000 was picked because it is the maximum rate faac supports),
+        // and never change that fixed rate in the mixer, simply modulating
+        // it downstream according to what the application requires.
+        //
+        // Alternatively, we could avoid exposing that config switch, and
+        // always output 48000, which should be more than enough for anyone
+        asrccapsfilter
+            .set_property(
+                "caps",
+                &gst::Caps::builder("audio/x-raw")
+                    .field("channels", &2)
+                    .field("format", &"S16LE")
+                    .field("rate", &96000)
+                    .build(),
+            )
+            .unwrap();
+
         acapsfilter
             .set_property(
                 "caps",
                 &gst::Caps::builder("audio/x-raw")
                     .field("channels", &2)
                     .field("format", &"S16LE")
+                    .field("rate", &96000)
+                    .build(),
+            )
+            .unwrap();
+
+        aresamplecapsfilter
+            .set_property(
+                "caps",
+                &gst::Caps::builder("audio/x-raw")
                     .field("rate", &self.config.sample_rate)
                     .build(),
             )
@@ -380,9 +441,12 @@ impl Mixer {
             &vmixer,
             &vcapsfilter,
             &asrc,
+            &asrccapsfilter,
             &aqueue,
             &amixer,
             &acapsfilter,
+            &aresample,
+            &aresamplecapsfilter,
         ])?;
 
         gst::Element::link_many(&[
@@ -395,9 +459,12 @@ impl Mixer {
 
         gst::Element::link_many(&[
             &asrc,
+            &asrccapsfilter,
             &aqueue,
             &amixer,
             &acapsfilter,
+            &aresample,
+            &aresamplecapsfilter,
             self.audio_producer.appsink().upcast_ref(),
         ])?;
 
@@ -432,6 +499,8 @@ impl Mixer {
 
         self.video_mixer = Some(vmixer);
         self.audio_mixer = Some(amixer);
+        self.video_capsfilter = Some(vcapsfilter);
+        self.audio_capsfilter = Some(aresamplecapsfilter);
 
         let addr = ctx.address().clone();
         let id = self.id.clone();
@@ -446,6 +515,93 @@ impl Mixer {
 
         self.video_producer.forward();
         self.audio_producer.forward();
+
+        Ok(())
+    }
+
+    #[instrument(level = "debug", name = "updating config", skip(self), fields(id = %self.id))]
+    fn update_config(
+        &mut self,
+        width: Option<i32>,
+        height: Option<i32>,
+        sample_rate: Option<i32>,
+    ) -> Result<(), Error> {
+        if let Some(width) = width {
+            self.config.width = width;
+        }
+
+        if let Some(height) = height {
+            self.config.height = height;
+        }
+
+        if let Some(sample_rate) = sample_rate {
+            self.config.sample_rate = sample_rate;
+        }
+
+        // FIXME: do this atomically from selected_samples for tear-free transition
+        // once https://gitlab.freedesktop.org/gstreamer/gst-plugins-base/-/merge_requests/1156 is
+        // in
+
+        if let Some(capsfilter) = &self.video_capsfilter {
+            debug!("updating output resolution");
+            capsfilter
+                .set_property(
+                    "caps",
+                    &gst::Caps::builder("video/x-raw")
+                        .field("width", &self.config.width)
+                        .field("height", &self.config.height)
+                        .field("framerate", &gst::Fraction::new(30, 1))
+                        .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                        .field("format", &"I420")
+                        .field("colorimetry", &"bt601")
+                        .field("chroma-site", &"jpeg")
+                        .field("interlace-mode", &"progressive")
+                        .build(),
+                )
+                .unwrap();
+        }
+
+        if let Some(capsfilter) = &self.base_plate_capsfilter {
+            debug!("updating fallback image resolution");
+            capsfilter
+                .set_property(
+                    "caps",
+                    &gst::Caps::builder("video/x-raw")
+                        .field("width", &self.config.width)
+                        .field("height", &self.config.height)
+                        .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                        .build(),
+                )
+                .unwrap();
+        }
+
+        for (slot_id, slot) in &self.consumer_slots {
+            if let Some(ref capsfilter) = slot.video_capsfilter {
+                debug!(slot_id = %slot_id,"updating mixer slot resolution");
+                capsfilter
+                    .set_property(
+                        "caps",
+                        &gst::Caps::builder("video/x-raw")
+                            .field("width", &self.config.width)
+                            .field("height", &self.config.height)
+                            .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                            .build(),
+                    )
+                    .unwrap();
+            }
+        }
+
+        if let Some(capsfilter) = &self.audio_capsfilter {
+            debug!("Updating output audio rate");
+            capsfilter
+                .set_property(
+                    "caps",
+                    &gst::Caps::builder("audio/x-raw")
+                        .field("rate", &self.config.sample_rate)
+                        .build(),
+                )
+                .unwrap();
+        }
 
         Ok(())
     }
@@ -539,14 +695,20 @@ impl Mixer {
             return Err(anyhow!("mixer {} already has link {}", self.id, link_id));
         }
 
-        let video_appsrc = gst::ElementFactory::make("appsrc", None)
-            .unwrap()
-            .downcast::<gst_app::AppSrc>()
-            .unwrap();
-        let audio_appsrc = gst::ElementFactory::make("appsrc", None)
-            .unwrap()
-            .downcast::<gst_app::AppSrc>()
-            .unwrap();
+        let video_appsrc = gst::ElementFactory::make(
+            "appsrc",
+            Some(&format!("mixer-slot-video-appsrc-{}", link_id)),
+        )
+        .unwrap()
+        .downcast::<gst_app::AppSrc>()
+        .unwrap();
+        let audio_appsrc = gst::ElementFactory::make(
+            "appsrc",
+            Some(&format!("mixer-slot-audio-appsrc-{}", link_id)),
+        )
+        .unwrap()
+        .downcast::<gst_app::AppSrc>()
+        .unwrap();
 
         for appsrc in &[&video_appsrc, &audio_appsrc] {
             appsrc.set_format(gst::Format::Time);
@@ -561,6 +723,7 @@ impl Mixer {
             audio_appsrc: audio_appsrc.clone(),
             audio_bin: None,
             video_bin: None,
+            video_capsfilter: None,
         };
 
         if self.status == MixerStatus::Mixing {
@@ -645,6 +808,11 @@ impl Handler<MixerCommandMessage> for Mixer {
             MixerCommand::Start { cue_time, end_time } => {
                 MessageResult(self.start(ctx, cue_time, end_time))
             }
+            MixerCommand::UpdateConfig {
+                width,
+                height,
+                sample_rate,
+            } => MessageResult(self.update_config(width, height, sample_rate)),
         }
     }
 }

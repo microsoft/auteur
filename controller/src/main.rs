@@ -11,8 +11,8 @@ mod controller;
 use controller::Controller;
 
 use rtmp_switcher_controlling::controller::{
-    Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, NodeCommand,
-    NodeCommands, SourceCommand, StreamConfig,
+    Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
+    NodeCommand, NodeCommands, SourceCommand,
 };
 
 #[derive(Clap, Debug)]
@@ -139,8 +139,22 @@ enum MixerSubCommand {
         id: String,
         /// When to cue the mixer, None is immediate
         cue_time: Option<DateTime<Utc>>,
-        /// When to stop the mixer, None is never
+        /// When to stop the mixer
         end_time: Option<DateTime<Utc>>,
+    },
+    /// Update resolution and / or sample rate
+    Update {
+        /// The id of an existing mixer
+        id: String,
+        /// The new width
+        #[clap(long)]
+        width: Option<i32>,
+        /// The new height
+        #[clap(long)]
+        height: Option<i32>,
+        /// The new sample rate
+        #[clap(long)]
+        sample_rate: Option<i32>,
     },
 }
 
@@ -182,7 +196,7 @@ fn main() -> Result<(), Error> {
                         fallback_timeout,
                     } => Command::Graph(GraphCommand::CreateMixer {
                         id,
-                        config: StreamConfig {
+                        config: MixerConfig {
                             width,
                             height,
                             sample_rate,
@@ -232,6 +246,19 @@ fn main() -> Result<(), Error> {
                 } => Command::Node(NodeCommand {
                     id,
                     command: NodeCommands::Mixer(MixerCommand::Start { cue_time, end_time }),
+                }),
+                MixerSubCommand::Update {
+                    id,
+                    width,
+                    height,
+                    sample_rate,
+                } => Command::Node(NodeCommand {
+                    id,
+                    command: NodeCommands::Mixer(MixerCommand::UpdateConfig {
+                        width,
+                        height,
+                        sample_rate,
+                    }),
                 }),
             },
         };

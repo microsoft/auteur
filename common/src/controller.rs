@@ -34,6 +34,11 @@ pub enum MixerCommand {
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     },
+    UpdateConfig {
+        width: Option<i32>,
+        height: Option<i32>,
+        sample_rate: Option<i32>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,7 +59,7 @@ pub struct NodeCommand {
 // Simplistic, will be extended
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub struct StreamConfig {
+pub struct MixerConfig {
     pub width: i32,
     pub height: i32,
     pub sample_rate: i32,
@@ -75,7 +80,7 @@ pub enum GraphCommand {
     },
     CreateMixer {
         id: String,
-        config: StreamConfig,
+        config: MixerConfig,
     },
     Connect {
         link_id: String,

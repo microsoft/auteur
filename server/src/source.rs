@@ -31,15 +31,17 @@ impl Source {
     pub fn new(id: &str, uri: &str) -> Self {
         let pipeline = gst::Pipeline::new(Some(&id.to_string()));
 
-        let audio_appsink = gst::ElementFactory::make("appsink", None)
-            .unwrap()
-            .downcast::<gst_app::AppSink>()
-            .unwrap();
+        let audio_appsink =
+            gst::ElementFactory::make("appsink", Some(&format!("src-audio-appsink-{}", id)))
+                .unwrap()
+                .downcast::<gst_app::AppSink>()
+                .unwrap();
 
-        let video_appsink = gst::ElementFactory::make("appsink", None)
-            .unwrap()
-            .downcast::<gst_app::AppSink>()
-            .unwrap();
+        let video_appsink =
+            gst::ElementFactory::make("appsink", Some(&format!("src-video-appsink-{}", id)))
+                .unwrap()
+                .downcast::<gst_app::AppSink>()
+                .unwrap();
 
         pipeline
             .add_many(&[&audio_appsink, &video_appsink])
