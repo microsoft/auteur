@@ -96,6 +96,12 @@ enum CreateNodeSubCommand {
         height: i32,
         /// sample rate of the output audio
         sample_rate: i32,
+        /// local fallback image path
+        #[clap(long)]
+        fallback_image: Option<String>,
+        /// local fallback image timeout, milliseconds
+        #[clap(long)]
+        fallback_timeout: Option<u32>,
     },
 }
 
@@ -172,12 +178,16 @@ fn main() -> Result<(), Error> {
                         width,
                         height,
                         sample_rate,
+                        fallback_image,
+                        fallback_timeout,
                     } => Command::Graph(GraphCommand::CreateMixer {
                         id,
                         config: StreamConfig {
                             width,
                             height,
                             sample_rate,
+                            fallback_image,
+                            fallback_timeout,
                         },
                     }),
                 },

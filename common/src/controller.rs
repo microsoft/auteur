@@ -58,6 +58,8 @@ pub struct StreamConfig {
     pub width: i32,
     pub height: i32,
     pub sample_rate: i32,
+    pub fallback_image: Option<String>,
+    pub fallback_timeout: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

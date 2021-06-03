@@ -2,7 +2,9 @@ use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
+use gst_base::prelude::*;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{MixerCommand, MixerStatus, StreamConfig};
@@ -12,6 +14,8 @@ use crate::utils::{
     make_element, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
 };
 
+const DEFAULT_FALLBACK_TIMEOUT: u32 = 500;
+
 struct ConsumerSlot {
     video_producer: StreamProducer,
     audio_producer: StreamProducer,
@@ -20,6 +24,12 @@ struct ConsumerSlot {
 
     video_bin: Option<gst::Bin>,
     audio_bin: Option<gst::Bin>,
+}
+
+#[derive(Debug)]
+pub struct MixingState {
+    base_plate_timeout: gst::ClockTime,
+    showing_base_plate: bool,
 }
 
 pub struct Mixer {
@@ -36,6 +46,9 @@ pub struct Mixer {
     video_mixer: Option<gst::Element>,
 
     config: StreamConfig,
+
+    mixing_state: Arc<Mutex<MixingState>>,
+    fallback_timeout: gst::ClockTime,
 
     state_handle: Option<SpawnHandle>,
 }
@@ -92,6 +105,8 @@ impl Mixer {
             .add_many(&[&audio_appsink, &video_appsink])
             .unwrap();
 
+        let fallback_timeout = config.fallback_timeout.unwrap_or(DEFAULT_FALLBACK_TIMEOUT);
+
         Self {
             id: id.to_string(),
             cue_time: None,
@@ -105,6 +120,11 @@ impl Mixer {
             audio_mixer: None,
             video_mixer: None,
             config,
+            mixing_state: Arc::new(Mutex::new(MixingState {
+                base_plate_timeout: gst::CLOCK_TIME_NONE,
+                showing_base_plate: true,
+            })),
+            fallback_timeout: fallback_timeout as u64 * gst::MSECOND,
             state_handle: None,
         }
     }
@@ -187,9 +207,120 @@ impl Mixer {
         Ok(())
     }
 
+    #[instrument(level = "debug", name = "building base plate", skip(self), fields(id = %self.id))]
+    fn build_base_plate(&self) -> Result<gst::Element, Error> {
+        let bin = gst::Bin::new(None);
+
+        let ghost = match self.config.fallback_image.as_ref() {
+            Some(path) => {
+                let filesrc = make_element("filesrc", None)?;
+                let decodebin = make_element("decodebin3", None)?;
+                let vconv = make_element("videoconvert", None)?;
+                let vscale = make_element("videoscale", None)?;
+                let capsfilter = make_element("capsfilter", None)?;
+                let imagefreeze = make_element("imagefreeze", None)?;
+
+                filesrc.set_property("location", path).unwrap();
+                imagefreeze.set_property("is-live", &true).unwrap();
+                capsfilter
+                    .set_property(
+                        "caps",
+                        &gst::Caps::builder("video/x-raw")
+                            .field("width", &self.config.width)
+                            .field("height", &self.config.height)
+                            .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                            .build(),
+                    )
+                    .unwrap();
+
+                bin.add_many(&[
+                    &filesrc,
+                    &decodebin,
+                    &vconv,
+                    &vscale,
+                    &capsfilter,
+                    &imagefreeze,
+                ])?;
+
+                let vconv_clone = vconv.downgrade();
+                decodebin.connect_pad_added(move |_bin, pad| {
+                    if let Some(vconv) = vconv_clone.upgrade() {
+                        let sinkpad = vconv.static_pad("sink").unwrap();
+                        pad.link(&sinkpad).unwrap();
+                    }
+                });
+
+                filesrc.link(&decodebin)?;
+
+                gst::Element::link_many(&[&vconv, &vscale, &capsfilter, &imagefreeze])?;
+
+                gst::GhostPad::with_target(Some("src"), &imagefreeze.static_pad("src").unwrap())
+                    .unwrap()
+            }
+            None => {
+                let vsrc = make_element("videotestsrc", None)?;
+                vsrc.set_property("is-live", &true).unwrap();
+                vsrc.set_property_from_str("pattern", "black");
+
+                bin.add(&vsrc)?;
+
+                gst::GhostPad::with_target(Some("src"), &vsrc.static_pad("src").unwrap()).unwrap()
+            }
+        };
+
+        bin.add_pad(&ghost).unwrap();
+
+        Ok(bin.upcast())
+    }
+
+    #[instrument(name = "Updating mixing state", level = "trace")]
+    fn update_mixing_state(
+        agg: &gst_base::Aggregator,
+        id: &str,
+        pts: gst::ClockTime,
+        mixing_state: &mut MixingState,
+        timeout: gst::ClockTime,
+    ) {
+        let mut base_plate_only = true;
+
+        let base_plate_pad = agg.static_pad("sink_0").unwrap();
+
+        for pad in agg.sink_pads() {
+            if pad == base_plate_pad {
+                continue;
+            }
+
+            let agg_pad: &gst_base::AggregatorPad = pad.downcast_ref().unwrap();
+            if let Some(sample) = agg.peek_next_sample(agg_pad) {
+                trace!(pad = %pad.name(), "selected non-base plate sample {:?}", sample);
+                base_plate_only = false;
+                break;
+            }
+        }
+
+        if base_plate_only {
+            if mixing_state.base_plate_timeout.is_none() {
+                mixing_state.base_plate_timeout = pts;
+            } else if !mixing_state.showing_base_plate {
+                if pts - mixing_state.base_plate_timeout > timeout {
+                    debug!("falling back to base plate {:?}", base_plate_pad);
+                    base_plate_pad.set_property("alpha", &1.0f64).unwrap();
+                    mixing_state.showing_base_plate = true;
+                }
+            }
+        } else {
+            if mixing_state.showing_base_plate {
+                debug!("hiding base plate: {:?}", base_plate_pad);
+                base_plate_pad.set_property("alpha", &0.0f64).unwrap();
+                mixing_state.showing_base_plate = false;
+            }
+            mixing_state.base_plate_timeout = gst::CLOCK_TIME_NONE;
+        }
+    }
+
     #[instrument(level = "debug", name = "mixing", skip(self, ctx), fields(id = %self.id))]
     fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        let vsrc = make_element("videotestsrc", None)?;
+        let vsrc = self.build_base_plate()?;
         let vqueue = make_element("queue", None)?;
         let vmixer = make_element("compositor", Some("compositor"))?;
         let vcapsfilter = make_element("capsfilter", None)?;
@@ -199,8 +330,6 @@ impl Mixer {
         let amixer = make_element("audiomixer", Some("audiomixer"))?;
         let acapsfilter = make_element("capsfilter", None)?;
 
-        vsrc.set_property("is-live", &true).unwrap();
-        vsrc.set_property_from_str("pattern", "black");
         vmixer.set_property_from_str("background", "black");
         vmixer
             .set_property(
@@ -285,6 +414,21 @@ impl Mixer {
                 &self.config,
             )?;
         }
+
+        let mixing_state = self.mixing_state.clone();
+        let id = self.id.clone();
+        let timeout = self.fallback_timeout;
+
+        vmixer.set_property("emit-signals", &true).unwrap();
+        vmixer
+            .downcast_ref::<gst_base::Aggregator>()
+            .unwrap()
+            .connect_samples_selected(
+                move |agg: &gst_base::Aggregator, _segment, pts, _dts, _duration, _info| {
+                    let mut mixing_state = mixing_state.lock().unwrap();
+                    Mixer::update_mixing_state(agg, &id, pts, &mut *mixing_state, timeout);
+                },
+            );
 
         self.video_mixer = Some(vmixer);
         self.audio_mixer = Some(amixer);
