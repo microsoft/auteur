@@ -39,6 +39,10 @@ pub enum MixerCommand {
         height: Option<i32>,
         sample_rate: Option<i32>,
     },
+    SetSlotVolume {
+        slot_id: String,
+        volume: f64,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
