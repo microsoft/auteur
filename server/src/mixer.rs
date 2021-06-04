@@ -9,9 +9,11 @@ use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{MixerCommand, MixerConfig, MixerStatus};
 
-use crate::node::{ConsumerMessage, GetProducerMessage, MixerCommandMessage, NodeManager};
+use crate::node::{
+    ConsumerMessage, GetProducerMessage, MixerCommandMessage, NodeManager, ScheduleMessage,
+};
 use crate::utils::{
-    make_element, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
+    make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
 };
 
 const DEFAULT_FALLBACK_TIMEOUT: u32 = 500;
@@ -783,6 +785,32 @@ impl Mixer {
             Err(anyhow!("mixer {} has no slot with id {}", self.id, slot_id))
         }
     }
+
+    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
+    fn reschedule(
+        &mut self,
+        ctx: &mut Context<Self>,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        match self.status {
+            MixerStatus::Initial => Ok(()),
+            MixerStatus::Mixing => {
+                if cue_time.is_some() {
+                    Err(anyhow!("can't change cue time when mixing"))
+                } else {
+                    Ok(())
+                }
+            }
+            MixerStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
+        }?;
+
+        update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
+
+        self.schedule_state(ctx);
+
+        Ok(())
+    }
 }
 
 impl Handler<ConsumerMessage> for Mixer {
@@ -846,5 +874,13 @@ impl Handler<GetProducerMessage> for Mixer {
             self.video_producer.clone(),
             self.audio_producer.clone(),
         )))
+    }
+}
+
+impl Handler<ScheduleMessage> for Mixer {
+    type Result = Result<(), Error>;
+
+    fn handle(&mut self, msg: ScheduleMessage, ctx: &mut Context<Self>) -> Self::Result {
+        self.reschedule(ctx, msg.cue_time, msg.end_time)
     }
 }

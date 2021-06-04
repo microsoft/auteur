@@ -68,6 +68,17 @@ enum NodeSubCommand {
         /// The id of an existing consumer node
         sink_id: String,
     },
+    /// Reschedule any node
+    Reschedule {
+        /// The id of an existing node
+        id: String,
+        /// The new cue time. If not specified, left unchanged
+        #[clap(long)]
+        cue_time: Option<DateTime<Utc>>,
+        /// The new end time. If not specified, left unchanged
+        #[clap(long)]
+        end_time: Option<DateTime<Utc>>,
+    },
 }
 
 #[derive(Clap, Debug)]
@@ -112,8 +123,10 @@ enum SourceSubCommand {
         /// The id of an existing source
         id: String,
         /// When to cue the source, None is immediate
+        #[clap(long)]
         cue_time: Option<DateTime<Utc>>,
         /// When to stop the source, None is never
+        #[clap(long)]
         end_time: Option<DateTime<Utc>>,
     },
 }
@@ -125,8 +138,10 @@ enum DestinationSubCommand {
         /// The id of an existing destination
         id: String,
         /// When to cue the destination, None is immediate
+        #[clap(long)]
         cue_time: Option<DateTime<Utc>>,
         /// When to stop the destination, None is never
+        #[clap(long)]
         end_time: Option<DateTime<Utc>>,
     },
 }
@@ -138,8 +153,10 @@ enum MixerSubCommand {
         /// The id of an existing mixer
         id: String,
         /// When to cue the mixer, None is immediate
+        #[clap(long)]
         cue_time: Option<DateTime<Utc>>,
         /// When to stop the mixer
+        #[clap(long)]
         end_time: Option<DateTime<Utc>>,
     },
     /// Update resolution and / or sample rate
@@ -213,6 +230,15 @@ fn main() -> Result<(), Error> {
                     link_id,
                     src_id,
                     sink_id,
+                }),
+                NodeSubCommand::Reschedule {
+                    id,
+                    cue_time,
+                    end_time,
+                } => Command::Graph(GraphCommand::Reschedule {
+                    id,
+                    cue_time,
+                    end_time,
                 }),
             },
             SubCommand::Source { subcmd } => match subcmd {

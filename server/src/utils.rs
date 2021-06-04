@@ -8,6 +8,7 @@ use futures::prelude::*;
 use gst::prelude::*;
 
 use anyhow::{anyhow, Error};
+use chrono::{DateTime, Utc};
 use tracing::{debug, error, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -419,4 +420,38 @@ impl Handler<StopManagerMessage> for PipelineManager {
     fn handle(&mut self, _msg: StopManagerMessage, ctx: &mut Context<Self>) {
         ctx.stop();
     }
+}
+
+pub fn update_times(
+    current_cue_time: &mut Option<DateTime<Utc>>,
+    new_cue_time: &Option<DateTime<Utc>>,
+    current_end_time: &mut Option<DateTime<Utc>>,
+    new_end_time: &Option<DateTime<Utc>>,
+) -> Result<(), Error> {
+    /* Transactional, either update completely or not at all */
+    if let Some(cue_time) = new_cue_time {
+        if let Some(end_time) = new_end_time.as_ref().or(current_end_time.as_ref()) {
+            if end_time <= cue_time {
+                return Err(anyhow!("end_time {} <= cue_time {}", end_time, cue_time));
+            }
+        }
+    }
+
+    if let Some(end_time) = new_end_time {
+        if let Some(cue_time) = new_cue_time.as_ref().or(current_cue_time.as_ref()) {
+            if end_time <= cue_time {
+                return Err(anyhow!("end_time {} <= cue_time {}", end_time, cue_time));
+            }
+        }
+    }
+
+    if let Some(cue_time) = new_cue_time {
+        *current_cue_time = Some(*cue_time);
+    }
+
+    if let Some(end_time) = new_end_time {
+        *current_end_time = Some(*end_time);
+    }
+
+    Ok(())
 }

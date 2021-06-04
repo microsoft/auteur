@@ -8,9 +8,9 @@ use rtmp_switcher_controlling::controller::{
     DestinationCommand, DestinationFamily, DestinationStatus,
 };
 
-use crate::node::{ConsumerMessage, DestinationCommandMessage, NodeManager};
+use crate::node::{ConsumerMessage, DestinationCommandMessage, NodeManager, ScheduleMessage};
 use crate::utils::{
-    make_element, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
+    make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
 };
 
 struct ConsumerSlot {
@@ -334,6 +334,32 @@ impl Destination {
             Err(anyhow!("can't disconnect, not connected"))
         }
     }
+
+    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
+    fn reschedule(
+        &mut self,
+        ctx: &mut Context<Self>,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        match self.status {
+            DestinationStatus::Initial => Ok(()),
+            DestinationStatus::Streaming => {
+                if cue_time.is_some() {
+                    Err(anyhow!("can't change cue time when streaming"))
+                } else {
+                    Ok(())
+                }
+            }
+            DestinationStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
+        }?;
+
+        update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
+
+        self.schedule_state(ctx);
+
+        Ok(())
+    }
 }
 
 impl Handler<ConsumerMessage> for Destination {
@@ -379,5 +405,13 @@ impl Handler<ErrorMessage> for Destination {
         error!("Got error message '{}' on destination {}", msg.0, self.id,);
 
         ctx.stop();
+    }
+}
+
+impl Handler<ScheduleMessage> for Destination {
+    type Result = Result<(), Error>;
+
+    fn handle(&mut self, msg: ScheduleMessage, ctx: &mut Context<Self>) -> Self::Result {
+        self.reschedule(ctx, msg.cue_time, msg.end_time)
     }
 }

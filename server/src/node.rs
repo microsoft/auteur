@@ -4,6 +4,7 @@ use crate::source::{Source, SourceStoppedMessage};
 use crate::utils::StreamProducer;
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
+use chrono::{DateTime, Utc};
 use futures::prelude::*;
 use rtmp_switcher_controlling::controller::{
     Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
@@ -85,23 +86,47 @@ impl Message for ConsumerMessage {
     type Result = Result<(), Error>;
 }
 
+trait Schedulable: Handler<ScheduleMessage> {}
+
+#[derive(Debug)]
+pub struct ScheduleMessage {
+    pub cue_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+}
+
+impl Message for ScheduleMessage {
+    type Result = Result<(), Error>;
+}
+
 /// All the node types NodeManager supports
 
+#[derive(Clone)]
 enum Node {
     Source(Addr<Source>),
     Destination(Addr<Destination>),
     Mixer(Addr<Mixer>),
 }
 
-/// We track separately:
-///
-/// * all nodes by type
-///
-/// * the links that have been established, used when disconnecting
-///
-/// * all nodes that can consume data
-///
-/// * all nodes that can produce data
+impl Node {
+    fn schedule(&mut self, msg: ScheduleMessage) -> ResponseFuture<Result<(), Error>> {
+        let recipient: Recipient<ScheduleMessage> = match self {
+            Node::Source(addr) => addr.clone().recipient(),
+            Node::Destination(addr) => addr.clone().recipient(),
+            Node::Mixer(addr) => addr.clone().recipient(),
+        };
+        Box::pin(async move { recipient.send(msg).await.unwrap() })
+    }
+}
+
+// We track separately:
+//
+// * all nodes by type
+//
+// * the links that have been established, used when disconnecting
+//
+// * all nodes that can consume data
+//
+// * all nodes that can produce data
 
 pub struct NodeManager {
     nodes: HashMap<String, Node>,
@@ -296,6 +321,25 @@ impl NodeManager {
         })
     }
 
+    #[instrument(level = "trace", name = "schedule-command", skip(self))]
+    fn send_schedule_command_future(
+        &mut self,
+        id: &str,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> ResponseActFuture<Self, Result<(), Error>> {
+        if let Some(node) = self.nodes.get(id) {
+            let mut node = node.clone();
+            Box::pin({
+                async move { node.schedule(ScheduleMessage { cue_time, end_time }).await }
+                    .into_actor(self)
+                    .then(move |res, _slf, _ctx| actix::fut::ready(res))
+            })
+        } else {
+            Box::pin(actix::fut::ready(Err(anyhow!("No node with id {}", id))))
+        }
+    }
+
     #[instrument(level = "trace", name = "connect-command", skip(self))]
     fn connect_future(
         &mut self,
@@ -385,6 +429,11 @@ impl Handler<CommandMessage> for NodeManager {
                 GraphCommand::CreateMixer { id, config } => {
                     Box::pin(actix::fut::ready(self.create_mixer(&id, config)))
                 }
+                GraphCommand::Reschedule {
+                    id,
+                    cue_time,
+                    end_time,
+                } => self.send_schedule_command_future(&id, cue_time, end_time),
             },
             Command::Node(cmd) => match cmd {
                 NodeCommand { id, command } => match command {

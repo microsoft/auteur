@@ -1,6 +1,6 @@
-use crate::node::{GetProducerMessage, NodeManager, SourceCommandMessage};
+use crate::node::{GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage};
 use crate::utils::{
-    make_element, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
+    make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
 };
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
@@ -9,28 +9,48 @@ use gst::prelude::*;
 use rtmp_switcher_controlling::controller::{SourceCommand, SourceStatus};
 use tracing::{debug, error, instrument, trace};
 
+/// The main complexity for this node is the prerolling feature:
+/// when the node is scheduled to play in the future, we spin it
+/// up 10 seconds before its cue time. Non-live sources are blocked
+/// by fallbacksrc, which only picks a base time once unblocked,
+/// and data coming from live sources is discarded by the StreamProducers
+/// until forward() is called on them.
+///
+/// Part of the extra complexity is due to the rescheduling feature:
+/// when rescheduling a prerolling source, we want to tear down the
+/// previous pipeline, but as logical connections are tracked by the
+/// StreamProducer elements, we want to keep their lifecycle tied to
+/// that of the source. This means appsinks may be removed from an old
+/// pipeline and moved to a new one, this is safe but needs to be kept
+/// in mind.
+
+#[derive(Debug)]
+struct State {
+    pipeline: gst::Pipeline,
+    pipeline_manager: Addr<PipelineManager>,
+    src: gst::Element,
+    // Only used to monitor status
+    switches: Vec<gst::Element>,
+    n_streams: u32,
+}
+
 #[derive(Debug)]
 pub struct Source {
     id: String,
     uri: String,
     cue_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
-    status: SourceStatus,
-    n_streams: u32,
-    pipeline: gst::Pipeline,
-    pipeline_manager: Option<Addr<PipelineManager>>,
-    src: Option<gst::Element>,
-    switches: Vec<gst::Element>,
+
     audio_producer: StreamProducer,
     video_producer: StreamProducer,
 
+    status: SourceStatus,
+    state: Option<State>,
     state_handle: Option<SpawnHandle>,
 }
 
 impl Source {
     pub fn new(id: &str, uri: &str) -> Self {
-        let pipeline = gst::Pipeline::new(Some(&id.to_string()));
-
         let audio_appsink =
             gst::ElementFactory::make("appsink", Some(&format!("src-audio-appsink-{}", id)))
                 .unwrap()
@@ -43,24 +63,15 @@ impl Source {
                 .downcast::<gst_app::AppSink>()
                 .unwrap();
 
-        pipeline
-            .add_many(&[&audio_appsink, &video_appsink])
-            .unwrap();
-
         Self {
             id: id.to_string(),
             uri: uri.to_string(),
             cue_time: None,
             end_time: None,
-            status: SourceStatus::Initial,
-            n_streams: 0,
-            pipeline,
-            pipeline_manager: None,
-            src: None,
-            // Only used to monitor status
-            switches: vec![],
             audio_producer: StreamProducer::from(&audio_appsink),
             video_producer: StreamProducer::from(&video_appsink),
+            status: SourceStatus::Initial,
+            state: None,
             state_handle: None,
         }
     }
@@ -108,13 +119,19 @@ impl Source {
             return Err(anyhow!("can't preroll source in state: {:?}", self.status));
         }
 
+        let pipeline = gst::Pipeline::new(Some(&self.id.to_string()));
+        let audio_appsink: &gst::Element = self.audio_producer.appsink().upcast_ref();
+        let video_appsink: &gst::Element = self.video_producer.appsink().upcast_ref();
+
+        pipeline.add_many(&[audio_appsink, video_appsink]).unwrap();
+
         let src = make_element("fallbacksrc", None)?;
-        self.pipeline.add(&src)?;
+        pipeline.add(&src)?;
 
         src.set_property("uri", &self.uri).unwrap();
         src.set_property("manual-unblock", &true).unwrap();
 
-        let pipeline_clone = self.pipeline.downgrade();
+        let pipeline_clone = pipeline.downgrade();
         let addr = ctx.address();
         let video_producer = self.video_producer.clone();
         let audio_producer = self.audio_producer.clone();
@@ -181,11 +198,22 @@ impl Source {
         debug!("now prerolling");
 
         self.status = SourceStatus::Prerolling;
-        self.src = Some(src);
+        self.state = Some(State {
+            pipeline: pipeline.clone(),
+            pipeline_manager: PipelineManager::new(
+                pipeline.clone(),
+                ctx.address().downgrade().recipient(),
+                &self.id,
+            )
+            .start(),
+            src,
+            switches: vec![],
+            n_streams: 0,
+        });
 
         let addr = ctx.address().clone();
         let id = self.id.clone();
-        self.pipeline.call_async(move |pipeline| {
+        pipeline.call_async(move |pipeline| {
             if let Err(err) = pipeline.set_state(gst::State::Playing) {
                 let _ = addr.do_send(ErrorMessage(format!(
                     "Failed to start source {}: {}",
@@ -203,9 +231,9 @@ impl Source {
             return Err(anyhow!("can't play source in state: {:?}", self.status));
         }
 
-        let src = self.src.as_ref().unwrap();
+        let state = self.state.as_ref().unwrap();
 
-        src.emit_by_name("unblock", &[]).unwrap();
+        state.src.emit_by_name("unblock", &[]).unwrap();
         self.video_producer.forward();
         self.audio_producer.forward();
 
@@ -269,7 +297,7 @@ impl Source {
         }
     }
 
-    #[instrument(level = "trace", name = "cueing", skip(self, ctx), fields(id = %self.id))]
+    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn play(
         &mut self,
         ctx: &mut Context<Self>,
@@ -300,93 +328,133 @@ impl Source {
     }
 
     fn handle_stream_change(&mut self, ctx: &mut Context<Self>, starting: bool) {
-        if starting {
-            self.n_streams += 1;
+        if let Some(ref mut state) = self.state {
+            if starting {
+                state.n_streams += 1;
 
-            debug!(id = %self.id, n_streams = %self.n_streams, "new active stream");
-        } else {
-            self.n_streams -= 1;
+                debug!(id = %self.id, n_streams = %state.n_streams, "new active stream");
+            } else {
+                state.n_streams -= 1;
 
-            debug!(id = %self.id, n_streams = %self.n_streams, "active stream finished");
+                debug!(id = %self.id, n_streams = %state.n_streams, "active stream finished");
 
-            if self.n_streams == 0 {
-                ctx.stop()
+                if state.n_streams == 0 {
+                    ctx.stop()
+                }
             }
         }
     }
 
     #[instrument(level = "debug", name = "new-fallbackswitch", skip(self, ctx), fields(id = %self.id))]
     fn monitor_switch(&mut self, ctx: &mut Context<Self>, switch: gst::Element) {
-        let addr_clone = ctx.address().clone();
-        switch
-            .connect("notify::primary-health", false, move |_args| {
-                let _ = addr_clone.do_send(SourceStatusMessage);
-                None
-            })
-            .unwrap();
+        if let Some(ref mut state) = self.state {
+            let addr_clone = ctx.address().clone();
+            switch
+                .connect("notify::primary-health", false, move |_args| {
+                    let _ = addr_clone.do_send(SourceStatusMessage);
+                    None
+                })
+                .unwrap();
 
-        let addr_clone = ctx.address().clone();
-        switch
-            .connect("notify::fallback-health", false, move |_args| {
-                let _ = addr_clone.do_send(SourceStatusMessage);
-                None
-            })
-            .unwrap();
+            let addr_clone = ctx.address().clone();
+            switch
+                .connect("notify::fallback-health", false, move |_args| {
+                    let _ = addr_clone.do_send(SourceStatusMessage);
+                    None
+                })
+                .unwrap();
 
-        self.switches.push(switch);
+            state.switches.push(switch);
+        }
     }
 
     #[instrument(level = "trace", name = "new-source-status", skip(self), fields(id = %self.id))]
     fn log_source_status(&mut self) {
-        if let Some(ref src) = self.src {
-            let value = src.property("status").unwrap();
+        if let Some(ref state) = self.state {
+            let value = state.src.property("status").unwrap();
             let status = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
             trace!("Source status: {}", status.nick());
             trace!(
                 "Source statistics: {:?}",
-                src.property("statistics").unwrap()
+                state.src.property("statistics").unwrap()
             );
+
+            for switch in &state.switches {
+                let switch_name = match switch.static_pad("src").unwrap().caps() {
+                    Some(caps) => match caps.structure(0) {
+                        Some(s) => s.name(),
+                        None => "EMPTY",
+                    },
+                    None => "ANY",
+                };
+
+                let value = switch.property("primary-health").unwrap();
+                let health = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
+                trace!("switch {} primary health: {}", switch_name, health.nick());
+
+                let value = switch.property("fallback-health").unwrap();
+                let health = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
+                trace!("switch {} fallback health: {}", switch_name, health.nick());
+            }
+        }
+    }
+
+    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
+    fn reschedule(
+        &mut self,
+        ctx: &mut Context<Self>,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        match self.status {
+            SourceStatus::Initial => Ok(()),
+            SourceStatus::Prerolling => Ok(()),
+            SourceStatus::Playing => {
+                if cue_time.is_some() {
+                    Err(anyhow!("can't change cue time when playing"))
+                } else {
+                    Ok(())
+                }
+            }
+            SourceStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
+        }?;
+
+        update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
+
+        if cue_time.is_some() {
+            if let Some(state) = self.state.take() {
+                debug!("tearing down previously prerolling pipeline");
+                let _ = state.pipeline.set_state(gst::State::Null);
+
+                let audio_appsink: &gst::Element = self.audio_producer.appsink().upcast_ref();
+                let video_appsink: &gst::Element = self.video_producer.appsink().upcast_ref();
+
+                state
+                    .pipeline
+                    .remove_many(&[audio_appsink, video_appsink])
+                    .unwrap();
+
+                let _ = state.pipeline_manager.do_send(StopManagerMessage);
+            }
+            self.status = SourceStatus::Initial;
         }
 
-        for switch in &self.switches {
-            let switch_name = match switch.static_pad("src").unwrap().caps() {
-                Some(caps) => match caps.structure(0) {
-                    Some(s) => s.name(),
-                    None => "EMPTY",
-                },
-                None => "ANY",
-            };
+        self.schedule_state(ctx);
 
-            let value = switch.property("primary-health").unwrap();
-            let health = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
-            trace!("switch {} primary health: {}", switch_name, health.nick());
-
-            let value = switch.property("fallback-health").unwrap();
-            let health = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
-            trace!("switch {} fallback health: {}", switch_name, health.nick());
-        }
+        Ok(())
     }
 }
 
 impl Actor for Source {
     type Context = Context<Self>;
 
-    #[instrument(level = "debug", name = "starting", skip(self, ctx), fields(id = %self.id))]
-    fn started(&mut self, ctx: &mut Self::Context) {
-        self.pipeline_manager = Some(
-            PipelineManager::new(
-                self.pipeline.clone(),
-                ctx.address().downgrade().recipient(),
-                &self.id,
-            )
-            .start(),
-        );
-    }
+    #[instrument(level = "debug", name = "starting", skip(self, _ctx), fields(id = %self.id))]
+    fn started(&mut self, _ctx: &mut Self::Context) {}
 
     #[instrument(level = "debug", name = "stopping", skip(self, _ctx), fields(id = %self.id))]
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        if let Some(manager) = self.pipeline_manager.take() {
-            let _ = manager.do_send(StopManagerMessage);
+        if let Some(state) = self.state.take() {
+            let _ = state.pipeline_manager.do_send(StopManagerMessage);
         }
 
         NodeManager::from_registry().do_send(SourceStoppedMessage {
@@ -485,5 +553,13 @@ impl Handler<SourceStatusMessage> for Source {
 
     fn handle(&mut self, _msg: SourceStatusMessage, _ctx: &mut Context<Self>) -> Self::Result {
         self.log_source_status();
+    }
+}
+
+impl Handler<ScheduleMessage> for Source {
+    type Result = Result<(), Error>;
+
+    fn handle(&mut self, msg: ScheduleMessage, ctx: &mut Context<Self>) -> Self::Result {
+        self.reschedule(ctx, msg.cue_time, msg.end_time)
     }
 }

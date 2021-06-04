@@ -87,6 +87,11 @@ pub enum GraphCommand {
         src_id: String,
         sink_id: String,
     },
+    Reschedule {
+        id: String,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
