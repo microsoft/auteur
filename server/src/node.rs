@@ -126,7 +126,12 @@ impl Node {
             Node::Destination(addr) => addr.clone().recipient(),
             Node::Mixer(addr) => addr.clone().recipient(),
         };
-        Box::pin(async move { recipient.send(msg).await.unwrap() })
+        Box::pin(async move {
+            match recipient.send(msg).await {
+                Ok(res) => res,
+                Err(err) => Err(anyhow!("Internal server error {}", err)),
+            }
+        })
     }
 
     fn stop(&mut self) {
@@ -144,7 +149,12 @@ impl Node {
             Node::Destination(addr) => addr.clone().recipient(),
             Node::Mixer(addr) => addr.clone().recipient(),
         };
-        Box::pin(async move { recipient.send(GetNodeInfoMessage).await.unwrap() })
+        Box::pin(async move {
+            match recipient.send(GetNodeInfoMessage).await {
+                Ok(res) => res,
+                Err(err) => Err(anyhow!("Internal server error {}", err)),
+            }
+        })
     }
 }
 
@@ -305,7 +315,12 @@ impl NodeManager {
         Box::pin({
             async move { source.send(SourceCommandMessage { command }).await }
                 .into_actor(self)
-                .then(move |res, _slf, _ctx| actix::fut::ready(res.unwrap().map(|_| None)))
+                .then(move |res, _slf, _ctx| {
+                    actix::fut::ready(match res {
+                        Ok(res) => res.map(|_| None),
+                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+                    })
+                })
         })
     }
 
@@ -334,7 +349,12 @@ impl NodeManager {
         Box::pin({
             async move { dest.send(DestinationCommandMessage { command }).await }
                 .into_actor(self)
-                .then(move |res, _slf, _ctx| actix::fut::ready(res.unwrap().map(|_| None)))
+                .then(move |res, _slf, _ctx| {
+                    actix::fut::ready(match res {
+                        Ok(res) => res.map(|_| None),
+                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+                    })
+                })
         })
     }
 
@@ -360,7 +380,12 @@ impl NodeManager {
         Box::pin({
             async move { mixer.send(MixerCommandMessage { command }).await }
                 .into_actor(self)
-                .then(move |res, _slf, _ctx| actix::fut::ready(res.unwrap().map(|_| None)))
+                .then(move |res, _slf, _ctx| {
+                    actix::fut::ready(match res {
+                        Ok(res) => res.map(|_| None),
+                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+                    })
+                })
         })
     }
 
@@ -436,16 +461,19 @@ impl NodeManager {
                 })
                 .into_actor(self)
                 .then(move |res, slf, _ctx| {
-                    let res = res.unwrap();
+                    actix::fut::ready(match res {
+                        Ok(res) => {
+                            if res.is_ok() {
+                                debug!("Link established");
+                                slf.links.insert(link_id_clone, consumer_clone);
+                            } else {
+                                warn!("Failed to establish link");
+                            }
 
-                    if res.is_ok() {
-                        debug!("Link established");
-                        slf.links.insert(link_id_clone, consumer_clone);
-                    } else {
-                        warn!("Failed to establish link");
-                    }
-
-                    actix::fut::ready(res.map(|_| None))
+                            res.map(|_| None)
+                        }
+                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+                    })
                 })
         })
     }

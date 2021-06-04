@@ -46,23 +46,32 @@ impl Controller {
         async move { node_manager.send(CommandMessage { command }).await }
             .into_actor(self)
             .then(move |res, _, ctx| {
-                match res.unwrap() {
-                    Ok(res) => {
-                        ctx.text(
-                            serde_json::to_string(&ServerMessage {
-                                id: Some(command_id),
-                                result: CommandResult::Success { status: res },
-                            })
-                            .expect("failed to serialize CommandResult message"),
-                        );
-                    }
+                match res {
+                    Ok(res) => match res {
+                        Ok(res) => {
+                            ctx.text(
+                                serde_json::to_string(&ServerMessage {
+                                    id: Some(command_id),
+                                    result: CommandResult::Success { status: res },
+                                })
+                                .expect("failed to serialize CommandResult message"),
+                            );
+                        }
+                        Err(err) => {
+                            ctx.notify(ErrorMessage {
+                                msg: format!("Failed to run command: {:?}", err),
+                                command_id: Some(command_id),
+                            });
+                        }
+                    },
                     Err(err) => {
                         ctx.notify(ErrorMessage {
-                            msg: format!("Failed to run command: {:?}", err),
+                            msg: format!("Internal server error: {}", err),
                             command_id: Some(command_id),
                         });
                     }
                 }
+
                 actix::fut::ready(())
             })
     }
