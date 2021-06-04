@@ -79,6 +79,11 @@ enum NodeSubCommand {
         #[clap(long)]
         end_time: Option<DateTime<Utc>>,
     },
+    /// Remove an existing node
+    Remove {
+        /// The id of the node
+        id: String,
+    },
 }
 
 #[derive(Clap, Debug)]
@@ -240,6 +245,7 @@ fn main() -> Result<(), Error> {
                     cue_time,
                     end_time,
                 }),
+                NodeSubCommand::Remove { id } => Command::Graph(GraphCommand::Remove { id }),
             },
             SubCommand::Source { subcmd } => match subcmd {
                 SourceSubCommand::Play {

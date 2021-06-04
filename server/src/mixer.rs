@@ -11,6 +11,7 @@ use rtmp_switcher_controlling::controller::{MixerCommand, MixerConfig, MixerStat
 
 use crate::node::{
     ConsumerMessage, GetProducerMessage, MixerCommandMessage, NodeManager, ScheduleMessage,
+    StopMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -882,5 +883,14 @@ impl Handler<ScheduleMessage> for Mixer {
 
     fn handle(&mut self, msg: ScheduleMessage, ctx: &mut Context<Self>) -> Self::Result {
         self.reschedule(ctx, msg.cue_time, msg.end_time)
+    }
+}
+
+impl Handler<StopMessage> for Mixer {
+    type Result = Result<(), Error>;
+
+    fn handle(&mut self, _msg: StopMessage, ctx: &mut Context<Self>) -> Self::Result {
+        ctx.stop();
+        Ok(())
     }
 }

@@ -92,6 +92,9 @@ pub enum GraphCommand {
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     },
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

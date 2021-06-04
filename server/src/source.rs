@@ -1,4 +1,6 @@
-use crate::node::{GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage};
+use crate::node::{
+    GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage, StopMessage,
+};
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
 };
@@ -561,5 +563,14 @@ impl Handler<ScheduleMessage> for Source {
 
     fn handle(&mut self, msg: ScheduleMessage, ctx: &mut Context<Self>) -> Self::Result {
         self.reschedule(ctx, msg.cue_time, msg.end_time)
+    }
+}
+
+impl Handler<StopMessage> for Source {
+    type Result = Result<(), Error>;
+
+    fn handle(&mut self, _msg: StopMessage, ctx: &mut Context<Self>) -> Self::Result {
+        ctx.stop();
+        Ok(())
     }
 }

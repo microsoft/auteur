@@ -86,8 +86,6 @@ impl Message for ConsumerMessage {
     type Result = Result<(), Error>;
 }
 
-trait Schedulable: Handler<ScheduleMessage> {}
-
 #[derive(Debug)]
 pub struct ScheduleMessage {
     pub cue_time: Option<DateTime<Utc>>,
@@ -95,6 +93,13 @@ pub struct ScheduleMessage {
 }
 
 impl Message for ScheduleMessage {
+    type Result = Result<(), Error>;
+}
+
+#[derive(Debug)]
+pub struct StopMessage;
+
+impl Message for StopMessage {
     type Result = Result<(), Error>;
 }
 
@@ -115,6 +120,15 @@ impl Node {
             Node::Mixer(addr) => addr.clone().recipient(),
         };
         Box::pin(async move { recipient.send(msg).await.unwrap() })
+    }
+
+    fn stop(&mut self) {
+        let recipient: Recipient<StopMessage> = match self {
+            Node::Source(addr) => addr.clone().recipient(),
+            Node::Destination(addr) => addr.clone().recipient(),
+            Node::Mixer(addr) => addr.clone().recipient(),
+        };
+        let _ = recipient.do_send(StopMessage);
     }
 }
 
@@ -218,6 +232,15 @@ impl NodeManager {
         trace!("Created mixer {}", id);
 
         Ok(())
+    }
+
+    fn remove_node(&mut self, id: &str) -> Result<(), Error> {
+        if let Some(mut node) = self.nodes.remove(id) {
+            node.stop();
+            Ok(())
+        } else {
+            Err(anyhow!("No node with id {}", id))
+        }
     }
 
     fn disconnect_consumers(
@@ -434,6 +457,7 @@ impl Handler<CommandMessage> for NodeManager {
                     cue_time,
                     end_time,
                 } => self.send_schedule_command_future(&id, cue_time, end_time),
+                GraphCommand::Remove { id } => Box::pin(actix::fut::ready(self.remove_node(&id))),
             },
             Command::Node(cmd) => match cmd {
                 NodeCommand { id, command } => match command {
