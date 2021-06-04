@@ -162,9 +162,15 @@ impl Controller {
                             CommandResult::Error { message } => {
                                 eprintln!("Server error: {}", message);
                             }
-                            CommandResult::Success => {
-                                println!("Command ran successfully");
-                            }
+                            CommandResult::Success { status } => match status {
+                                None => {
+                                    println!("Command ran successfully");
+                                }
+                                Some(status) => {
+                                    println!("Received status:");
+                                    println!("{}", serde_json::to_string_pretty(&status).unwrap());
+                                }
+                            },
                         }
 
                         let exit_on_response_id = exit_on_response_id_clone.lock().unwrap();

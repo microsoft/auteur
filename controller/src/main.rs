@@ -89,6 +89,11 @@ enum NodeSubCommand {
         /// The id of the node
         id: String,
     },
+    /// Retrieve the status for all or a specific node
+    Status {
+        /// The id of the node, if not specified, all nodes
+        id: Option<String>,
+    },
 }
 
 #[derive(Clap, Debug)]
@@ -263,6 +268,7 @@ fn main() -> Result<(), Error> {
                     end_time,
                 }),
                 NodeSubCommand::Remove { id } => Command::Graph(GraphCommand::Remove { id }),
+                NodeSubCommand::Status { id } => Command::Graph(GraphCommand::Status { id }),
             },
             SubCommand::Source { subcmd } => match subcmd {
                 SourceSubCommand::Play {

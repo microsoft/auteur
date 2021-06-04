@@ -1,5 +1,6 @@
 use crate::node::{
-    GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage, StopMessage,
+    GetNodeInfoMessage, GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage,
+    StopMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -8,7 +9,7 @@ use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use rtmp_switcher_controlling::controller::{SourceCommand, SourceStatus};
+use rtmp_switcher_controlling::controller::{NodeInfo, SourceCommand, SourceInfo, SourceStatus};
 use tracing::{debug, error, instrument, trace};
 
 /// The main complexity for this node is the prerolling feature:
@@ -572,5 +573,19 @@ impl Handler<StopMessage> for Source {
     fn handle(&mut self, _msg: StopMessage, ctx: &mut Context<Self>) -> Self::Result {
         ctx.stop();
         Ok(())
+    }
+}
+
+impl Handler<GetNodeInfoMessage> for Source {
+    type Result = Result<NodeInfo, Error>;
+
+    fn handle(&mut self, _msg: GetNodeInfoMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        Ok(NodeInfo::Source(SourceInfo {
+            uri: self.uri.clone(),
+            consumer_slot_ids: self.video_producer.get_consumer_ids(),
+            cue_time: self.cue_time,
+            end_time: self.end_time,
+            status: self.status,
+        }))
     }
 }

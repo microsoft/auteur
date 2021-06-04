@@ -7,11 +7,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, instrument, trace};
 
-use rtmp_switcher_controlling::controller::{MixerCommand, MixerConfig, MixerStatus};
+use rtmp_switcher_controlling::controller::{
+    MixerCommand, MixerConfig, MixerInfo, MixerSlotInfo, MixerStatus, NodeInfo,
+};
 
 use crate::node::{
-    ConsumerMessage, GetProducerMessage, MixerCommandMessage, NodeManager, ScheduleMessage,
-    StopMessage,
+    ConsumerMessage, GetNodeInfoMessage, GetProducerMessage, MixerCommandMessage, NodeManager,
+    ScheduleMessage, StopMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -918,5 +920,33 @@ impl Handler<StopMessage> for Mixer {
     fn handle(&mut self, _msg: StopMessage, ctx: &mut Context<Self>) -> Self::Result {
         ctx.stop();
         Ok(())
+    }
+}
+
+impl Handler<GetNodeInfoMessage> for Mixer {
+    type Result = Result<NodeInfo, Error>;
+
+    fn handle(&mut self, _msg: GetNodeInfoMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        Ok(NodeInfo::Mixer(MixerInfo {
+            width: self.config.width,
+            height: self.config.height,
+            sample_rate: self.config.sample_rate,
+            slots: self
+                .consumer_slots
+                .iter()
+                .map(|(id, slot)| {
+                    (
+                        id.clone(),
+                        MixerSlotInfo {
+                            volume: slot.volume,
+                        },
+                    )
+                })
+                .collect(),
+            consumer_slot_ids: self.video_producer.get_consumer_ids(),
+            cue_time: self.cue_time,
+            end_time: self.end_time,
+            status: self.status,
+        }))
     }
 }

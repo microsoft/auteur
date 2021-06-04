@@ -5,6 +5,7 @@
 use chrono::offset::Utc;
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Commands to execute on a source
 #[derive(Debug, Serialize, Deserialize)]
@@ -102,6 +103,9 @@ pub enum GraphCommand {
     Disconnect {
         link_id: String,
     },
+    Status {
+        id: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -122,6 +126,7 @@ pub struct ControllerMessage {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SourceStatus {
     Initial,
     Prerolling,
@@ -130,6 +135,7 @@ pub enum SourceStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DestinationStatus {
     Initial,
     Streaming,
@@ -137,6 +143,7 @@ pub enum DestinationStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MixerStatus {
     Initial,
     Mixing,
@@ -148,12 +155,65 @@ pub enum DestinationFamily {
     RTMP { uri: String },
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct SourceInfo {
+    pub uri: String,
+    pub consumer_slot_ids: Vec<String>,
+    pub cue_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub status: SourceStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct DestinationInfo {
+    pub family: DestinationFamily,
+    pub slot_id: Option<String>,
+    pub cue_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub status: DestinationStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct MixerSlotInfo {
+    pub volume: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct MixerInfo {
+    pub width: i32,
+    pub height: i32,
+    pub sample_rate: i32,
+    pub slots: HashMap<String, MixerSlotInfo>,
+    pub consumer_slot_ids: Vec<String>,
+    pub cue_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub status: MixerStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeInfo {
+    Source(SourceInfo),
+    Destination(DestinationInfo),
+    Mixer(MixerInfo),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct Status {
+    pub nodes: HashMap<String, NodeInfo>,
+}
+
 /// Messages sent from the the server to the controller.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CommandResult {
     Error { message: String },
-    Success,
+    Success { status: Option<Status> },
 }
 
 /// Messages sent from the the server to the controller.

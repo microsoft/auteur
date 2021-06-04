@@ -47,11 +47,11 @@ impl Controller {
             .into_actor(self)
             .then(move |res, _, ctx| {
                 match res.unwrap() {
-                    Ok(()) => {
+                    Ok(res) => {
                         ctx.text(
                             serde_json::to_string(&ServerMessage {
                                 id: Some(command_id),
-                                result: CommandResult::Success,
+                                result: CommandResult::Success { status: res },
                             })
                             .expect("failed to serialize CommandResult message"),
                         );

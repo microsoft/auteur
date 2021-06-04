@@ -5,11 +5,12 @@ use gst::prelude::*;
 use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{
-    DestinationCommand, DestinationFamily, DestinationStatus,
+    DestinationCommand, DestinationFamily, DestinationInfo, DestinationStatus, NodeInfo,
 };
 
 use crate::node::{
-    ConsumerMessage, DestinationCommandMessage, NodeManager, ScheduleMessage, StopMessage,
+    ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage, NodeManager, ScheduleMessage,
+    StopMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -424,5 +425,19 @@ impl Handler<StopMessage> for Destination {
     fn handle(&mut self, _msg: StopMessage, ctx: &mut Context<Self>) -> Self::Result {
         ctx.stop();
         Ok(())
+    }
+}
+
+impl Handler<GetNodeInfoMessage> for Destination {
+    type Result = Result<NodeInfo, Error>;
+
+    fn handle(&mut self, _msg: GetNodeInfoMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        Ok(NodeInfo::Destination(DestinationInfo {
+            family: self.family.clone(),
+            slot_id: self.consumer_slot.as_ref().map(|slot| slot.id.clone()),
+            cue_time: self.cue_time,
+            end_time: self.end_time,
+            status: self.status,
+        }))
     }
 }
