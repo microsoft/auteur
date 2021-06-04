@@ -525,6 +525,14 @@ impl Handler<ErrorMessage> for Source {
     fn handle(&mut self, msg: ErrorMessage, ctx: &mut Context<Self>) -> Self::Result {
         error!("Got error message '{}' on source {}", msg.0, self.id,);
 
+        if let Some(state) = &self.state {
+            gst::debug_bin_to_dot_file_with_ts(
+                &state.pipeline,
+                gst::DebugGraphDetails::all(),
+                format!("error-source-{}", self.id),
+            );
+        }
+
         ctx.stop();
     }
 }

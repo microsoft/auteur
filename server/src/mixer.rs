@@ -891,6 +891,12 @@ impl Handler<ErrorMessage> for Mixer {
     fn handle(&mut self, msg: ErrorMessage, ctx: &mut Context<Self>) -> Self::Result {
         error!("Got error message '{}' on destination {}", msg.0, self.id,);
 
+        gst::debug_bin_to_dot_file_with_ts(
+            &self.pipeline,
+            gst::DebugGraphDetails::all(),
+            format!("error-mixer-{}", self.id),
+        );
+
         ctx.stop();
     }
 }

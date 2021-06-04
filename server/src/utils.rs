@@ -351,6 +351,11 @@ impl StreamHandler<BusMessage> for PipelineManager {
                 }
             }
             MessageView::Error(err) => {
+                gst::debug_bin_to_dot_file_with_ts(
+                    &self.pipeline,
+                    gst::DebugGraphDetails::all(),
+                    format!("error-{}", self.id),
+                );
                 if let Some(recipient) = self.recipient.upgrade() {
                     let src = err.src();
                     let dbg = err.debug();

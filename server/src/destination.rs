@@ -110,7 +110,7 @@ impl Destination {
         let vconv = make_element("videoconvert", None)?;
         let timecodestamper = make_element("timecodestamper", None)?;
         let timeoverlay = make_element("timeoverlay", None)?;
-        let venc = make_element("x264enc", None)?;
+        let venc = make_element("nvh264enc", None).unwrap_or(make_element("x264enc", None)?);
         let vparse = make_element("h264parse", None)?;
         let venc_queue = make_element("queue", None)?;
 
@@ -141,8 +141,18 @@ impl Destination {
             &sink,
         ])?;
 
-        venc.set_property_from_str("tune", "zerolatency");
-        venc.set_property("key-int-max", &30u32).unwrap();
+        if venc.has_property("tune", None) {
+            venc.set_property_from_str("tune", "zerolatency");
+        } else if venc.has_property("zerolatency", None) {
+            venc.set_property("zerolatency", &true).unwrap();
+        }
+
+        if venc.has_property("key-int-max", None) {
+            venc.set_property("key-int-max", &30u32).unwrap();
+        } else if venc.has_property("gop-size", None) {
+            venc.set_property("gop-size", &30i32).unwrap();
+        }
+
         vparse.set_property("config-interval", &-1i32).unwrap();
         sink.set_property("location", uri).unwrap();
 
@@ -174,6 +184,7 @@ impl Destination {
             &timecodestamper,
             &timeoverlay,
             &venc,
+            &vparse,
             &venc_queue,
             &mux,
             &mux_queue,
@@ -252,7 +263,10 @@ impl Destination {
                     }
                     DestinationStatus::Stopped => Ok(()),
                 } {
-                    ctx.notify(ErrorMessage(format!("Failed to preroll source: {:?}", err)));
+                    ctx.notify(ErrorMessage(format!(
+                        "Failed to advance destination state: {:?}",
+                        err
+                    )));
                 } else {
                     self.schedule_state(ctx);
                 }
@@ -406,6 +420,12 @@ impl Handler<ErrorMessage> for Destination {
 
     fn handle(&mut self, msg: ErrorMessage, ctx: &mut Context<Self>) -> Self::Result {
         error!("Got error message '{}' on destination {}", msg.0, self.id,);
+
+        gst::debug_bin_to_dot_file_with_ts(
+            &self.pipeline,
+            gst::DebugGraphDetails::all(),
+            format!("error-destination-{}", self.id),
+        );
 
         ctx.stop();
     }
