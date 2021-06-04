@@ -95,6 +95,9 @@ pub enum GraphCommand {
     Remove {
         id: String,
     },
+    Disconnect {
+        link_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -68,6 +68,11 @@ enum NodeSubCommand {
         /// The id of an existing consumer node
         sink_id: String,
     },
+    /// Remove an existing link
+    Disconnect {
+        /// The id of the link
+        link_id: String,
+    },
     /// Reschedule any node
     Reschedule {
         /// The id of an existing node
@@ -236,6 +241,9 @@ fn main() -> Result<(), Error> {
                     src_id,
                     sink_id,
                 }),
+                NodeSubCommand::Disconnect { link_id } => {
+                    Command::Graph(GraphCommand::Disconnect { link_id })
+                }
                 NodeSubCommand::Reschedule {
                     id,
                     cue_time,

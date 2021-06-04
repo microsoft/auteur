@@ -243,6 +243,10 @@ impl NodeManager {
         }
     }
 
+    fn disconnect_consumer(&self, consumer: &mut Recipient<ConsumerMessage>, slot_id: String) {
+        let _ = consumer.do_send(ConsumerMessage::Disconnect { slot_id });
+    }
+
     fn disconnect_consumers(
         &mut self,
         video_producer: StreamProducer,
@@ -251,14 +255,14 @@ impl NodeManager {
         debug!("Disconnecting consumers");
 
         for slot_id in video_producer.get_consumer_ids() {
-            if let Some(consumer) = self.links.remove(&slot_id) {
-                let _ = consumer.do_send(ConsumerMessage::Disconnect { slot_id });
+            if let Some(mut consumer) = self.links.remove(&slot_id) {
+                self.disconnect_consumer(&mut consumer, slot_id);
             }
         }
 
         for slot_id in audio_producer.get_consumer_ids() {
-            if let Some(consumer) = self.links.remove(&slot_id) {
-                let _ = consumer.do_send(ConsumerMessage::Disconnect { slot_id });
+            if let Some(mut consumer) = self.links.remove(&slot_id) {
+                self.disconnect_consumer(&mut consumer, slot_id);
             }
         }
     }
@@ -429,6 +433,16 @@ impl NodeManager {
                 })
         })
     }
+
+    #[instrument(level = "trace", name = "disconnect-command", skip(self))]
+    fn disconnect(&mut self, link_id: &str) -> Result<(), Error> {
+        if let Some(mut consumer) = self.links.remove(link_id) {
+            self.disconnect_consumer(&mut consumer, link_id.to_string());
+            Ok(())
+        } else {
+            Err(anyhow!("no link with id {}", link_id))
+        }
+    }
 }
 
 impl Handler<CommandMessage> for NodeManager {
@@ -443,6 +457,9 @@ impl Handler<CommandMessage> for NodeManager {
                     src_id,
                     sink_id,
                 } => self.connect_future(&link_id, &src_id, &sink_id),
+                GraphCommand::Disconnect { link_id } => {
+                    Box::pin(actix::fut::ready(self.disconnect(&link_id)))
+                }
                 GraphCommand::CreateSource { id, uri } => {
                     Box::pin(actix::fut::ready(self.create_source(&id, &uri)))
                 }
