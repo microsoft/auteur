@@ -61,7 +61,7 @@ impl StreamProducer {
 
         consumers.consumers.insert(
             consumer_id.to_string(),
-            StreamConsumer::new(consumer, fku_probe_id),
+            StreamConsumer::new(consumer, fku_probe_id, consumer_id),
         );
     }
 
@@ -246,7 +246,19 @@ struct StreamConsumer {
 }
 
 impl StreamConsumer {
-    fn new(appsrc: &gst_app::AppSrc, fku_probe_id: gst::PadProbeId) -> Self {
+    fn new(appsrc: &gst_app::AppSrc, fku_probe_id: gst::PadProbeId, consumer_id: &str) -> Self {
+        let consumer_id = consumer_id.to_string();
+        appsrc.set_callbacks(
+            gst_app::AppSrcCallbacks::builder()
+                .enough_data(move |_appsrc| {
+                    trace!(
+                        "consumer {} is not consuming fast enough, old samples are getting dropped",
+                        consumer_id
+                    );
+                })
+                .build(),
+        );
+
         StreamConsumer {
             appsrc: appsrc.clone(),
             fku_probe_id: Some(fku_probe_id),
