@@ -35,6 +35,7 @@ pub struct Destination {
     consumer_slot: Option<ConsumerSlot>,
 
     state_handle: Option<SpawnHandle>,
+    monitor_handle: Option<SpawnHandle>,
 }
 
 impl Actor for Destination {
@@ -102,6 +103,7 @@ impl Destination {
             audio_appsrc,
             consumer_slot: None,
             state_handle: None,
+            monitor_handle: None,
         }
     }
 
@@ -209,6 +211,20 @@ impl Destination {
         } else {
             debug!("started but not yet connected");
         }
+
+        let sink_clone = sink.downgrade();
+        let id_clone = self.id.clone();
+        self.monitor_handle = Some(ctx.run_interval(
+            std::time::Duration::from_secs(1),
+            move |_s, _ctx| {
+                if let Some(sink) = sink_clone.upgrade() {
+                    let val = sink.property("stats").unwrap();
+                    let s = val.get::<gst::Structure>().unwrap();
+
+                    trace!(id = %id_clone, "rtmp destination statistics: {}", s.to_string());
+                }
+            },
+        ));
 
         self.status = DestinationStatus::Streaming;
 
