@@ -35,6 +35,7 @@ struct State {
     // Only used to monitor status
     switches: Vec<gst::Element>,
     n_streams: u32,
+    source_bin: Option<gst::Element>,
 }
 
 #[derive(Debug)]
@@ -50,6 +51,7 @@ pub struct Source {
     status: SourceStatus,
     state: Option<State>,
     state_handle: Option<SpawnHandle>,
+    monitor_handle: Option<SpawnHandle>,
 }
 
 impl Source {
@@ -76,6 +78,7 @@ impl Source {
             status: SourceStatus::Initial,
             state: None,
             state_handle: None,
+            monitor_handle: None,
         }
     }
 
@@ -192,9 +195,13 @@ impl Source {
         let src_bin: &gst::Bin = src.downcast_ref().unwrap();
 
         let addr = ctx.address().clone();
-        src_bin.connect_element_added(move |_src, element| {
+        src_bin.connect_deep_element_added(move |_src, _bin, element| {
             if element.has_property("primary-health", None) {
                 let _ = addr.do_send(NewSwitchMessage(element.clone()));
+            }
+
+            if element.type_().name() == "GstURISourceBin" {
+                let _ = addr.do_send(NewSourceBinMessage(element.clone()));
             }
         });
 
@@ -212,6 +219,7 @@ impl Source {
             src,
             switches: vec![],
             n_streams: 0,
+            source_bin: None,
         });
 
         let addr = ctx.address().clone();
@@ -229,7 +237,7 @@ impl Source {
     }
 
     #[instrument(level = "debug", name = "unblocking", skip(self), fields(id = %self.id))]
-    fn unblock(&mut self) -> Result<(), Error> {
+    fn unblock(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
         if self.status != SourceStatus::Prerolling {
             return Err(anyhow!("can't play source in state: {:?}", self.status));
         }
@@ -241,6 +249,21 @@ impl Source {
         self.audio_producer.forward();
 
         debug!("unblocked, now playing");
+
+        let id_clone = self.id.clone();
+        self.monitor_handle = Some(ctx.run_interval(
+            std::time::Duration::from_secs(1),
+            move |s, _ctx| {
+                if let Some(ref state) = s.state {
+                    if let Some(ref source_bin) = state.source_bin {
+                        let val = source_bin.property("statistics").unwrap();
+                        let s = val.get::<gst::Structure>().unwrap();
+
+                        trace!(id = %id_clone, "source statistics: {}", s.to_string());
+                    }
+                }
+            },
+        ));
 
         self.status = SourceStatus::Playing;
 
@@ -282,7 +305,7 @@ impl Source {
                 trace!("progressing to next state");
                 if let Err(err) = match self.status {
                     SourceStatus::Initial => self.preroll(ctx),
-                    SourceStatus::Prerolling => self.unblock(),
+                    SourceStatus::Prerolling => self.unblock(ctx),
                     SourceStatus::Playing => {
                         ctx.stop();
                         self.status = SourceStatus::Stopped;
@@ -549,6 +572,23 @@ impl Handler<NewSwitchMessage> for Source {
 
     fn handle(&mut self, msg: NewSwitchMessage, ctx: &mut Context<Self>) -> Self::Result {
         self.monitor_switch(ctx, msg.0);
+    }
+}
+
+#[derive(Debug)]
+struct NewSourceBinMessage(gst::Element);
+
+impl Message for NewSourceBinMessage {
+    type Result = ();
+}
+
+impl Handler<NewSourceBinMessage> for Source {
+    type Result = ();
+
+    fn handle(&mut self, msg: NewSourceBinMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        if let Some(ref mut state) = self.state {
+            state.source_bin = Some(msg.0);
+        }
     }
 }
 
