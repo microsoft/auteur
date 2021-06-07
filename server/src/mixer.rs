@@ -81,7 +81,7 @@ impl Actor for Mixer {
         );
     }
 
-    #[instrument(level = "debug", name = "stopping", skip(self, _ctx), fields(id = %self.id))]
+    #[instrument(level = "debug", name = "stopped", skip(self, _ctx), fields(id = %self.id))]
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         if let Some(manager) = self.pipeline_manager.take() {
             let _ = manager.do_send(StopManagerMessage);

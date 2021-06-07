@@ -5,6 +5,7 @@ use crate::utils::StreamProducer;
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
+use futures::channel::oneshot;
 use futures::prelude::*;
 use rtmp_switcher_controlling::controller::{
     Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
@@ -173,6 +174,8 @@ pub struct NodeManager {
     links: HashMap<String, Recipient<ConsumerMessage>>,
     consumers: HashMap<String, Recipient<ConsumerMessage>>,
     producers: HashMap<String, Recipient<GetProducerMessage>>,
+
+    no_more_modes_sender: Option<oneshot::Sender<()>>,
 }
 
 impl Default for NodeManager {
@@ -182,6 +185,7 @@ impl Default for NodeManager {
             links: HashMap::new(),
             consumers: HashMap::new(),
             producers: HashMap::new(),
+            no_more_modes_sender: None,
         }
     }
 }
@@ -193,10 +197,6 @@ impl Actor for NodeManager {
 impl actix::Supervised for NodeManager {}
 
 impl SystemService for NodeManager {
-    // Note: a SystemService never stops once started, it simply gets dropped.
-    // This means that at program teardown, individual nodes can't rely on having
-    // their stopped function called, and setting the state of pipelines must be
-    // done on Drop (utils::PipelineManager takes care of that)
     fn service_started(&mut self, _ctx: &mut Context<Self>) {
         info!("Node manager coming online");
     }
@@ -260,8 +260,17 @@ impl NodeManager {
         Ok(())
     }
 
-    fn remove_node(&mut self, id: &str) -> Result<(), Error> {
-        if let Some(mut node) = self.nodes.remove(id) {
+    fn remove_node(&mut self, id: &str) {
+        let _ = self.nodes.remove(id);
+        if self.nodes.is_empty() {
+            if let Some(sender) = self.no_more_modes_sender.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    fn stop_node(&mut self, id: &str) -> Result<(), Error> {
+        if let Some(node) = self.nodes.get_mut(id) {
             node.stop();
             Ok(())
         } else {
@@ -559,7 +568,7 @@ impl Handler<CommandMessage> for NodeManager {
                     end_time,
                 } => self.send_schedule_command_future(&id, cue_time, end_time),
                 GraphCommand::Remove { id } => {
-                    Box::pin(actix::fut::ready(self.remove_node(&id).map(|_| None)))
+                    Box::pin(actix::fut::ready(self.stop_node(&id).map(|_| None)))
                 }
                 GraphCommand::Status { id } => self.get_status_future(id.as_ref()),
             },
@@ -585,7 +594,7 @@ impl Handler<SourceStoppedMessage> for NodeManager {
 
     #[instrument(level = "debug", name = "removing-source", skip(self, msg, _ctx), fields(id = %msg.id))]
     fn handle(&mut self, msg: SourceStoppedMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        let _ = self.nodes.remove(&msg.id);
+        self.remove_node(&msg.id);
         let _ = self.producers.remove(&msg.id);
 
         self.disconnect_consumers(msg.video_producer, msg.audio_producer);
@@ -599,7 +608,7 @@ impl Handler<DestinationStoppedMessage> for NodeManager {
 
     #[instrument(level = "debug", name = "removing-destination", skip(self, _ctx, msg), fields(id = %msg.id))]
     fn handle(&mut self, msg: DestinationStoppedMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        let _ = self.nodes.remove(&msg.id);
+        self.remove_node(&msg.id);
         let _ = self.consumers.remove(&msg.id);
 
         debug!("destination {} removed from NodeManager", msg.id);
@@ -613,7 +622,7 @@ impl Handler<MixerStoppedMessage> for NodeManager {
 
     #[instrument(level = "debug", name = "removing-mixer", skip(self, _ctx, msg), fields(id = %msg.id))]
     fn handle(&mut self, msg: MixerStoppedMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        let _ = self.nodes.remove(&msg.id);
+        self.remove_node(&msg.id);
         let _ = self.consumers.remove(&msg.id);
 
         self.disconnect_consumers(msg.video_producer, msg.audio_producer);
@@ -621,5 +630,40 @@ impl Handler<MixerStoppedMessage> for NodeManager {
         debug!("mixer {} removed from NodeManager", msg.id);
 
         MessageResult(())
+    }
+}
+
+impl Handler<StopMessage> for NodeManager {
+    type Result = ResponseFuture<Result<(), Error>>;
+
+    #[instrument(level = "info", name = "stopping manager", skip(self, _ctx, _msg))]
+    fn handle(&mut self, _msg: StopMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        for (_id, node) in self.nodes.iter_mut() {
+            node.stop();
+        }
+
+        let mut no_more_modes_receiver = {
+            if !self.nodes.is_empty() {
+                let (no_more_modes_sender, no_more_modes_receiver) = oneshot::channel::<()>();
+
+                self.no_more_modes_sender = Some(no_more_modes_sender);
+
+                info!("waiting for all nodes to stop");
+
+                Some(no_more_modes_receiver)
+            } else {
+                None
+            }
+        };
+
+        Box::pin(async move {
+            if let Some(receiver) = no_more_modes_receiver.take() {
+                let _ = receiver.await;
+            }
+
+            info!("all nodes have stopped, good bye!");
+
+            Ok(())
+        })
     }
 }

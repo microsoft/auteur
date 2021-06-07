@@ -9,6 +9,7 @@ use gst::prelude::*;
 
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
+use futures::channel::oneshot;
 use tracing::{debug, error, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -324,10 +325,37 @@ impl Message for BusMessage {
 }
 
 #[derive(Debug)]
+pub struct WaitForEosMessage;
+
+impl Message for WaitForEosMessage {
+    type Result = ();
+}
+
+impl Handler<WaitForEosMessage> for PipelineManager {
+    type Result = ResponseFuture<()>;
+
+    fn handle(&mut self, _msg: WaitForEosMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        let eos_receiver = self.eos_receiver.take();
+
+        Box::pin(async move {
+            if let Some(eos_receiver) = eos_receiver {
+                let _ = eos_receiver.await;
+
+                ()
+            } else {
+                ()
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
 pub struct PipelineManager {
     pipeline: gst::Pipeline,
     recipient: actix::WeakRecipient<ErrorMessage>,
     id: String,
+    eos_sender: Option<oneshot::Sender<()>>,
+    eos_receiver: Option<oneshot::Receiver<()>>,
 }
 
 impl Actor for PipelineManager {
@@ -341,6 +369,12 @@ impl Actor for PipelineManager {
         let bus = self.pipeline.bus().expect("Pipeline with no bus");
         let bus_stream = bus.stream();
         Self::add_stream(bus_stream.map(BusMessage), ctx);
+    }
+
+    #[instrument(level = "debug", name = "stopping", skip(self, _ctx), fields(id = %self.id))]
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        debug!(id = %self.id, "tearing down pipeline");
+        let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
 
@@ -394,6 +428,17 @@ impl StreamHandler<BusMessage> for PipelineManager {
                         )));
                     }
                 }
+
+                // No reason to wait for EOS indefinitely, won't
+                // come now
+                if let Some(eos_sender) = self.eos_sender.take() {
+                    let _ = eos_sender.send(());
+                }
+            }
+            MessageView::Eos(_) => {
+                if let Some(eos_sender) = self.eos_sender.take() {
+                    let _ = eos_sender.send(());
+                }
             }
             _ => (),
         }
@@ -402,18 +447,15 @@ impl StreamHandler<BusMessage> for PipelineManager {
 
 impl PipelineManager {
     pub fn new(pipeline: gst::Pipeline, recipient: WeakRecipient<ErrorMessage>, id: &str) -> Self {
+        let (eos_sender, eos_receiver) = oneshot::channel::<()>();
+
         Self {
             pipeline,
             recipient,
             id: id.to_string(),
+            eos_sender: Some(eos_sender),
+            eos_receiver: Some(eos_receiver),
         }
-    }
-}
-
-impl Drop for PipelineManager {
-    fn drop(&mut self) {
-        debug!("tearing down pipeline for node {}", self.id);
-        let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
 

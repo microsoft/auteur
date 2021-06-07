@@ -102,15 +102,13 @@ enum CreateNodeSubCommand {
     Source {
         /// Unique identifier for the source
         id: String,
-        /// URI of the source
+        /// The URI of the source
         uri: String,
     },
     /// Create a new destination
     Destination {
-        /// Unique identifier for the destination
-        id: String,
-        /// The URI of the destination
-        uri: String,
+        #[clap(subcommand)]
+        subcmd: CreateDestinationSubCommand,
     },
     /// Create a new mixer
     Mixer {
@@ -128,6 +126,29 @@ enum CreateNodeSubCommand {
         /// local fallback image timeout, milliseconds
         #[clap(long)]
         fallback_timeout: Option<u32>,
+    },
+}
+
+#[derive(Clap, Debug)]
+enum CreateDestinationSubCommand {
+    /// Create a new RTMP destination
+    RTMP {
+        /// Unique identifier for the destination
+        id: String,
+        /// RTMP URI
+        uri: String,
+    },
+    /// Create a new local file destination
+    LocalFile {
+        /// Unique identifier for the destination
+        id: String,
+        /// base path, extension and potentially %05d will get appended
+        /// on the other end (the latter if max_size_time is set)
+        base_name: String,
+        /// If set, the destination will split up the stream in multiple
+        /// files. milliseconds
+        #[clap(long)]
+        max_size_time: Option<u32>,
     },
 }
 
@@ -222,12 +243,25 @@ fn main() -> Result<(), Error> {
                     CreateNodeSubCommand::Source { id, uri } => {
                         Command::Graph(GraphCommand::CreateSource { id, uri })
                     }
-                    CreateNodeSubCommand::Destination { id, uri } => {
-                        Command::Graph(GraphCommand::CreateDestination {
+                    CreateNodeSubCommand::Destination { subcmd } => match subcmd {
+                        CreateDestinationSubCommand::RTMP { id, uri } => {
+                            Command::Graph(GraphCommand::CreateDestination {
+                                id,
+                                family: DestinationFamily::RTMP { uri },
+                            })
+                        }
+                        CreateDestinationSubCommand::LocalFile {
                             id,
-                            family: DestinationFamily::RTMP { uri },
-                        })
-                    }
+                            base_name,
+                            max_size_time,
+                        } => Command::Graph(GraphCommand::CreateDestination {
+                            id,
+                            family: DestinationFamily::LocalFile {
+                                base_name,
+                                max_size_time,
+                            },
+                        }),
+                    },
                     CreateNodeSubCommand::Mixer {
                         id,
                         width,

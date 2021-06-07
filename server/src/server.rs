@@ -4,7 +4,9 @@
 
 use crate::config::Config;
 use crate::controller::Controller;
+use crate::node::{NodeManager, StopMessage};
 
+use actix::SystemService;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 
@@ -58,6 +60,8 @@ pub async fn run(cfg: Config) -> Result<(), anyhow::Error> {
     };
 
     server.run().await?;
+
+    let _ = NodeManager::from_registry().send(StopMessage).await;
 
     Ok(())
 }

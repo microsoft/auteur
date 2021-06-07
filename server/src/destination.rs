@@ -14,6 +14,7 @@ use crate::node::{
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
+    WaitForEosMessage,
 };
 
 struct ConsumerSlot {
@@ -53,7 +54,18 @@ impl Actor for Destination {
         );
     }
 
-    #[instrument(level = "debug", name = "stopping", skip(self, _ctx), fields(id = %self.id))]
+    #[instrument(level = "debug", name = "stopping", skip(self, ctx), fields(id = %self.id))]
+    fn stopping(&mut self, ctx: &mut Self::Context) -> Running {
+        if self.wait_for_eos(ctx) {
+            self.status = DestinationStatus::Stopping;
+            Running::Continue
+        } else {
+            debug!("no need to wait for EOS");
+            Running::Stop
+        }
+    }
+
+    #[instrument(level = "debug", name = "stopped", skip(self, _ctx), fields(id = %self.id))]
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         if let Some(manager) = self.pipeline_manager.take() {
             let _ = manager.do_send(StopManagerMessage);
@@ -242,6 +254,88 @@ impl Destination {
         Ok(())
     }
 
+    #[instrument(level = "debug", name = "saving to local file", skip(self, ctx), fields(id = %self.id))]
+    fn start_local_file_pipeline(
+        &mut self,
+        ctx: &mut Context<Self>,
+        base_name: &str,
+        max_size_time: Option<u32>,
+    ) -> Result<(), Error> {
+        let vconv = make_element("videoconvert", None)?;
+        let venc = make_element("nvh264enc", None).unwrap_or(make_element("x264enc", None)?);
+        let vparse = make_element("h264parse", None)?;
+
+        let aconv = make_element("audioconvert", None)?;
+        let aresample = make_element("audioresample", None)?;
+        let aenc = make_element("faac", None)?;
+
+        let multiqueue = make_element("multiqueue", None)?;
+        let sink = make_element("splitmuxsink", None)?;
+
+        self.pipeline.add_many(&[
+            self.video_appsrc.upcast_ref(),
+            &vconv,
+            &venc,
+            &vparse,
+            self.audio_appsrc.upcast_ref(),
+            &aconv,
+            &aresample,
+            &aenc,
+            &multiqueue,
+            &sink,
+        ])?;
+
+        if let Some(max_size_time) = max_size_time {
+            sink.set_property("max-size-time", &(max_size_time as u64) * gst::MSECOND)
+                .unwrap();
+            sink.set_property("use-robust-muxing", &true).unwrap();
+            let mux = make_element("qtmux", None)?;
+            mux.set_property("reserved-moov-update-period", &gst::SECOND)
+                .unwrap();
+            sink.set_property("muxer", &mux).unwrap();
+            let location = base_name.to_owned() + "%05d.mp4";
+            sink.set_property("location", &location).unwrap();
+        } else {
+            let location = base_name.to_owned() + ".mp4";
+            sink.set_property("location", &location).unwrap();
+        }
+
+        vparse.link_pads(None, &multiqueue, Some("sink_0"))?;
+        aenc.link_pads(None, &multiqueue, Some("sink_1"))?;
+
+        multiqueue.link_pads(Some("src_0"), &sink, Some("video"))?;
+        multiqueue.link_pads(Some("src_1"), &sink, Some("audio_0"))?;
+
+        gst::Element::link_many(&[self.video_appsrc.upcast_ref(), &vconv, &venc, &vparse])?;
+
+        gst::Element::link_many(&[self.audio_appsrc.upcast_ref(), &aconv, &aresample, &aenc])?;
+
+        if let Some(slot) = &self.consumer_slot {
+            debug!("connecting to producers");
+            slot.video_producer
+                .add_consumer(&self.video_appsrc, &slot.id);
+            slot.audio_producer
+                .add_consumer(&self.audio_appsrc, &slot.id);
+        } else {
+            debug!("started but not yet connected");
+        }
+
+        self.status = DestinationStatus::Streaming;
+
+        let addr = ctx.address().clone();
+        let id = self.id.clone();
+        self.pipeline.call_async(move |pipeline| {
+            if let Err(err) = pipeline.set_state(gst::State::Playing) {
+                let _ = addr.do_send(ErrorMessage(format!(
+                    "Failed to start destination {}: {}",
+                    id, err
+                )));
+            }
+        });
+
+        Ok(())
+    }
+
     #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
     fn schedule_state(&mut self, ctx: &mut Context<Self>) {
         if let Some(handle) = self.state_handle {
@@ -252,6 +346,7 @@ impl Destination {
         let next_time = match self.status {
             DestinationStatus::Initial => self.cue_time,
             DestinationStatus::Streaming => self.end_time,
+            DestinationStatus::Stopping => None,
             DestinationStatus::Stopped => None,
         };
 
@@ -271,13 +366,17 @@ impl Destination {
                 if let Err(err) = match self.status {
                     DestinationStatus::Initial => match self.family.clone() {
                         DestinationFamily::RTMP { uri } => self.start_rtmp_pipeline(ctx, &uri),
+                        DestinationFamily::LocalFile {
+                            base_name,
+                            max_size_time,
+                        } => self.start_local_file_pipeline(ctx, &base_name, max_size_time),
                     },
                     DestinationStatus::Streaming => {
                         ctx.stop();
-                        self.status = DestinationStatus::Stopped;
+                        self.status = DestinationStatus::Stopping;
                         Ok(())
                     }
-                    DestinationStatus::Stopped => Ok(()),
+                    DestinationStatus::Stopped | DestinationStatus::Stopping => Ok(()),
                 } {
                     ctx.notify(ErrorMessage(format!(
                         "Failed to advance destination state: {:?}",
@@ -384,7 +483,9 @@ impl Destination {
                     Ok(())
                 }
             }
-            DestinationStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
+            DestinationStatus::Stopped | DestinationStatus::Stopping => {
+                Err(anyhow!("can't reschedule when stopping or stopped"))
+            }
         }?;
 
         update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
@@ -392,6 +493,44 @@ impl Destination {
         self.schedule_state(ctx);
 
         Ok(())
+    }
+
+    // Returns true if calling code should wait before fully stopping
+    #[instrument(level = "debug", name = "checking if waiting for EOS is needed", skip(self, ctx), fields(id = %self.id))]
+    fn wait_for_eos(&mut self, ctx: &mut Context<Self>) -> bool {
+        match self.status {
+            DestinationStatus::Initial | DestinationStatus::Stopped => false,
+            _ => match self.consumer_slot.take() {
+                Some(slot) => {
+                    let pipeline_manager = self.pipeline_manager.as_ref().unwrap();
+
+                    debug!("waiting for EOS");
+
+                    slot.video_producer.remove_consumer(&slot.id);
+                    slot.audio_producer.remove_consumer(&slot.id);
+
+                    self.video_appsrc.send_event(gst::event::Eos::new());
+                    self.audio_appsrc.send_event(gst::event::Eos::new());
+
+                    let fut = pipeline_manager
+                        .send(WaitForEosMessage)
+                        .into_actor(self)
+                        .then(|_res, slf, ctx| {
+                            let span = tracing::debug_span!("stopping", id = %slf.id);
+                            let _guard = span.enter();
+                            debug!("waited for EOS");
+                            slf.status = DestinationStatus::Stopped;
+                            ctx.stop();
+                            actix::fut::ready(())
+                        });
+
+                    ctx.wait(fut);
+
+                    true
+                }
+                _ => false,
+            },
+        }
     }
 }
 

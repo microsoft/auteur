@@ -139,6 +139,7 @@ pub enum SourceStatus {
 pub enum DestinationStatus {
     Initial,
     Streaming,
+    Stopping,
     Stopped,
 }
 
@@ -152,7 +153,13 @@ pub enum MixerStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DestinationFamily {
-    RTMP { uri: String },
+    RTMP {
+        uri: String,
+    },
+    LocalFile {
+        base_name: String,
+        max_size_time: Option<u32>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
