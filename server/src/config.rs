@@ -23,4 +23,6 @@ pub struct Config {
     /// Certificate private key file.
     #[structopt(short = "k", long)]
     pub key_file: Option<PathBuf>,
+    #[structopt(long)]
+    pub log_path: Option<PathBuf>,
 }

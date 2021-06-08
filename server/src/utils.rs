@@ -384,6 +384,13 @@ impl StreamHandler<BusMessage> for PipelineManager {
         use gst::MessageView;
 
         match msg.0.view() {
+            MessageView::Element(m) => {
+                if let Some(s) = m.structure() {
+                    if s.name() == "level" {
+                        trace!("audio output level: {}", s);
+                    }
+                }
+            }
             MessageView::Latency(_) => {
                 if let Some(src) = msg.0.src() {
                     if &src == self.pipeline.upcast_ref::<gst::Object>()

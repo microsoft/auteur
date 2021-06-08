@@ -368,6 +368,7 @@ impl Mixer {
         let aqueue = make_element("queue", None)?;
         let amixer = make_element("audiomixer", Some("audiomixer"))?;
         let acapsfilter = make_element("capsfilter", None)?;
+        let level = make_element("level", None)?;
         let aresample = make_element("audioresample", None)?;
         let aresamplecapsfilter = make_element("capsfilter", None)?;
 
@@ -454,6 +455,7 @@ impl Mixer {
             &aqueue,
             &amixer,
             &acapsfilter,
+            &level,
             &aresample,
             &aresamplecapsfilter,
         ])?;
@@ -472,6 +474,7 @@ impl Mixer {
             &aqueue,
             &amixer,
             &acapsfilter,
+            &level,
             &aresample,
             &aresamplecapsfilter,
             self.audio_producer.appsink().upcast_ref(),

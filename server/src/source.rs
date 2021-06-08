@@ -108,11 +108,21 @@ impl Source {
 
             Ok(appsink.clone())
         } else {
+            let aconv = make_element("audioconvert", None)?;
+            let level = make_element("level", None)?;
+
+            pipeline.add_many(&[&aconv, &level])?;
+
             let appsink: &gst::Element = audio_producer.appsink().upcast_ref();
 
             debug!(appsink = %appsink.name(), "linking audio stream to appsink");
 
-            let sinkpad = appsink.static_pad("sink").unwrap();
+            aconv.sync_state_with_parent()?;
+            level.sync_state_with_parent()?;
+
+            gst::Element::link_many(&[&aconv, &level, appsink])?;
+
+            let sinkpad = aconv.static_pad("sink").unwrap();
             pad.link(&sinkpad)?;
 
             Ok(appsink.clone())
