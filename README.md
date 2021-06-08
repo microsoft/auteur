@@ -1,14 +1,64 @@
 # RTMP switcher
 
-> This repo has been populated by an initial template to help get you started. Please
-> make sure to update the content to build a great experience for community-building.
+The current scope of this project is that of a basic live node
+compositor, with a service exposing a JSON API for creating,
+connecting, inspecting, scheduling and removing GStreamer processing
+nodes (sources, mixers and destinations as of writing).
 
-As the maintainer of this project, please make a few updates:
+An example client running commands one at a time is provided
+for exploring that API.
 
-- Improving this README.MD file to provide a great experience
-- Updating SUPPORT.MD with content about this project's support experience
-- Understanding the security reporting process in SECURITY.MD
-- Remove this section from the README
+## Environment
+
+This project depends on:
+
+* Rust (stable channel)
+
+* GStreamer (master as of writing)
+
+* gst-plugins-rs (<https://gitlab.freedesktop.org/meh/gst-plugins-rs/-/tree/fallbackswitch-dev> as of
+  writing, will make it to master soon)
+
+The most convenient testing platform for this PoC is a Linux machine,
+<https://gitlab.freedesktop.org/gstreamer/gst-build>, enter a devenv
+then build <https://gitlab.freedesktop.org/meh/gst-plugins-rs/-/tree/fallbackswitch-dev>
+and export `GST_PLUGIN_PATH`:
+
+``` shell
+export GST_PLUGIN_PATH=$GST_PLUGIN_PATH:/path/to/gst-plugins-rs/target/debug
+```
+
+A few GStreamer plugins are needed, make sure to install the dependencies
+for all of those before building gst-build:
+
+``` shell
+git grep "make_element(" | cut -d '"' -f 2 | sort -u
+```
+
+## Building
+
+``` shell
+cargo build
+```
+
+## Running
+
+Run the service:
+
+``` shell
+RTMP_SWITCHER_LOG=debug cargo run --bin rtmp-switcher
+```
+
+Explore and test the API with the client:
+
+``` shell
+cargo run --bin rtmp-switcher-controller -- help
+```
+
+You can also find the API definition in `common/src/controller.rs`.
+
+In addition, a simple wrapper script around the controller can
+be found in `node_schedule.py`.
 
 ## Contributing
 
