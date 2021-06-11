@@ -2007,6 +2007,7 @@ dependencies = [
  "smallvec 1.6.1",
  "structopt",
  "tracing",
+ "tracing-actix",
  "tracing-actix-web",
  "tracing-appender",
  "tracing-error",
@@ -2757,6 +2758,17 @@ dependencies = [
  "pin-project-lite 0.2.6",
  "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-actix"
+version = "0.0.1"
+source = "git+https://github.com/MathieuDuponchelle/tracing-actix.git?branch=actix-0.11#24a31df5bc35c7173d9608170b26eba0b3319768"
+dependencies = [
+ "actix",
+ "futures 0.3.15",
+ "pin-project-lite 0.2.6",
+ "tracing",
 ]
 
 [[package]]

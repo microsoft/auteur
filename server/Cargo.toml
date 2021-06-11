@@ -24,6 +24,7 @@ actix-web-httpauth = "0.6.0-beta.1"
 openssl = "0.10"
 tracing-actix-web = "0.4.0-beta.1"
 tracing = { version = "0.1", features = ["log"] }
+tracing-actix = { git = "https://github.com/MathieuDuponchelle/tracing-actix.git", branch="actix-0.11" }
 tracing-futures = { version = "0.1", features = ["std-future"] }
 tracing-subscriber = { version = "0.2", features = ["registry", "env-filter"] }
 tracing-log = "0.1"

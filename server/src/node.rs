@@ -14,6 +14,7 @@ use rtmp_switcher_controlling::controller::{
 use std::collections::HashMap;
 use tracing::{debug, info, instrument, trace, warn};
 use tracing_futures::Instrument;
+use tracing_actix::ActorInstrument;
 
 /// NodeManager acts as a tracker of all nodes, and dispatches
 /// messages accordingly
@@ -330,7 +331,7 @@ impl NodeManager {
                         Err(err) => Err(anyhow!("Internal server error {}", err)),
                     })
                 })
-        })
+        }.in_current_actor_span())
     }
 
     #[instrument(level = "trace", name = "destination-command", skip(self))]
@@ -364,7 +365,7 @@ impl NodeManager {
                         Err(err) => Err(anyhow!("Internal server error {}", err)),
                     })
                 })
-        })
+        }.in_current_actor_span())
     }
 
     #[instrument(level = "trace", name = "mixer-command", skip(self))]
@@ -395,7 +396,7 @@ impl NodeManager {
                         Err(err) => Err(anyhow!("Internal server error {}", err)),
                     })
                 })
-        })
+        }.in_current_actor_span())
     }
 
     #[instrument(level = "trace", name = "schedule-command", skip(self))]
@@ -411,7 +412,7 @@ impl NodeManager {
                 async move { node.schedule(ScheduleMessage { cue_time, end_time }).await }
                     .into_actor(self)
                     .then(move |res, _slf, _ctx| actix::fut::ready(res.map(|_| None)))
-            })
+            }.in_current_actor_span())
         } else {
             Box::pin(actix::fut::ready(Err(anyhow!("No node with id {}", id))))
         }
@@ -484,7 +485,7 @@ impl NodeManager {
                         Err(err) => Err(anyhow!("Internal server error {}", err)),
                     })
                 })
-        })
+        }.in_current_actor_span())
     }
 
     #[instrument(level = "trace", name = "disconnect-command", skip(self))]
@@ -534,7 +535,7 @@ impl NodeManager {
                         .collect(),
                 })))
             })
-        })
+        }.in_current_actor_span())
     }
 }
 
