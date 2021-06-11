@@ -1,3 +1,23 @@
+//! A source processing node.
+//!
+//! The only supported source type is created with a URI. In the future
+//! generators could also be supported, for example to display a countdown.
+//!
+//! The main complexity for this node is the [`prerolling`](SourceStatus::Prerolling)
+//! feature: when the node is scheduled to play in the future, we spin it
+//! up 10 seconds before its cue time. Non-live sources are blocked
+//! by fallbacksrc, which only picks a base time once unblocked,
+//! and data coming from live sources is discarded by the StreamProducers
+//! until forward() is called on them.
+//!
+//! Part of the extra complexity is due to the rescheduling feature:
+//! when rescheduling a prerolling source, we want to tear down the
+//! previous pipeline, but as logical connections are tracked by the
+//! StreamProducer elements, we want to keep their lifecycle tied to
+//! that of the source. This means appsinks may be removed from an old
+//! pipeline and moved to a new one, this is safe but needs to be kept
+//! in mind.
+
 use crate::node::{
     GetNodeInfoMessage, GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage,
     StopMessage,
@@ -12,49 +32,53 @@ use gst::prelude::*;
 use rtmp_switcher_controlling::controller::{NodeInfo, SourceCommand, SourceInfo, SourceStatus};
 use tracing::{debug, error, instrument, trace};
 
-/// The main complexity for this node is the prerolling feature:
-/// when the node is scheduled to play in the future, we spin it
-/// up 10 seconds before its cue time. Non-live sources are blocked
-/// by fallbacksrc, which only picks a base time once unblocked,
-/// and data coming from live sources is discarded by the StreamProducers
-/// until forward() is called on them.
-///
-/// Part of the extra complexity is due to the rescheduling feature:
-/// when rescheduling a prerolling source, we want to tear down the
-/// previous pipeline, but as logical connections are tracked by the
-/// StreamProducer elements, we want to keep their lifecycle tied to
-/// that of the source. This means appsinks may be removed from an old
-/// pipeline and moved to a new one, this is safe but needs to be kept
-/// in mind.
-
+/// The pipeline and various GStreamer elements that the source
+/// optionally wraps, their lifetime is not directly bound to that
+/// of the source itself
 #[derive(Debug)]
 struct State {
+    /// The wrapped pipeline
     pipeline: gst::Pipeline,
+    /// A helper for managing the pipeline
     pipeline_manager: Addr<PipelineManager>,
+    /// `fallbacksrc`
     src: gst::Element,
-    // Only used to monitor status
+    /// Vector of `fallbackswitch`, only used to monitor status
     switches: Vec<gst::Element>,
+    /// Increments when the src element exposes pads, decrements
+    /// when they receive EOS
     n_streams: u32,
+    /// `urisourcebin`, only used to monitor status
     source_bin: Option<gst::Element>,
 }
 
+/// The Source actor
 #[derive(Debug)]
 pub struct Source {
+    /// Unique identifier
     id: String,
+    /// URI the source will play
     uri: String,
+    /// When the source will start
     cue_time: Option<DateTime<Utc>>,
+    /// When the source will stop
     end_time: Option<DateTime<Utc>>,
-
+    /// Output audio producer
     audio_producer: StreamProducer,
+    /// Output video producer
     video_producer: StreamProducer,
-
+    /// The status of the source
     status: SourceStatus,
+    /// GStreamer elements when prerolling or playing
     state: Option<State>,
+    /// Scheduling timer
     state_handle: Option<SpawnHandle>,
+    /// Statistics timer
     monitor_handle: Option<SpawnHandle>,
 }
 
 impl Source {
+    /// Create a source
     pub fn new(id: &str, uri: &str) -> Self {
         let audio_appsink =
             gst::ElementFactory::make("appsink", Some(&format!("src-audio-appsink-{}", id)))
@@ -82,6 +106,7 @@ impl Source {
         }
     }
 
+    /// Connect pads exposed by `falllbacksrc` to our output producers
     #[instrument(level = "debug", name = "connecting", skip(pipeline, is_video, pad, video_producer, audio_producer), fields(pad = %pad.name()))]
     fn connect_pad(
         id: String,
@@ -129,6 +154,7 @@ impl Source {
         }
     }
 
+    /// Preroll the pipeline ahead of time (by default 10 seconds before cue time)
     #[instrument(level = "debug", name = "prerolling", skip(self, ctx), fields(id = %self.id))]
     fn preroll(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
         if self.status != SourceStatus::Initial {
@@ -246,6 +272,7 @@ impl Source {
         Ok(())
     }
 
+    /// Unblock a prerolling pipeline
     #[instrument(level = "debug", name = "unblocking", skip(self), fields(id = %self.id))]
     fn unblock(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
         if self.status != SourceStatus::Prerolling {
@@ -280,6 +307,7 @@ impl Source {
         Ok(())
     }
 
+    /// Progress through our state machine
     #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
     fn schedule_state(&mut self, ctx: &mut Context<Self>) {
         if let Some(handle) = self.state_handle {
@@ -333,6 +361,7 @@ impl Source {
         }
     }
 
+    /// Implement Play
     #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn play(
         &mut self,
@@ -363,6 +392,7 @@ impl Source {
         Ok(())
     }
 
+    /// A new pad was added, or an existing pad EOS'd
     fn handle_stream_change(&mut self, ctx: &mut Context<Self>, starting: bool) {
         if let Some(ref mut state) = self.state {
             if starting {
@@ -381,6 +411,7 @@ impl Source {
         }
     }
 
+    /// Track the status of a new fallbackswitch
     #[instrument(level = "debug", name = "new-fallbackswitch", skip(self, ctx), fields(id = %self.id))]
     fn monitor_switch(&mut self, ctx: &mut Context<Self>, switch: gst::Element) {
         if let Some(ref mut state) = self.state {
@@ -404,6 +435,7 @@ impl Source {
         }
     }
 
+    /// Trace the status of the source for monitoring purposes
     #[instrument(level = "trace", name = "new-source-status", skip(self), fields(id = %self.id))]
     fn log_source_status(&mut self) {
         if let Some(ref state) = self.state {
@@ -435,6 +467,7 @@ impl Source {
         }
     }
 
+    /// Implement Reschedule
     #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn reschedule(
         &mut self,
@@ -501,8 +534,10 @@ impl Actor for Source {
     }
 }
 
+/// Sent by the [`Source`] to notify itself that a stream started or ended
 #[derive(Debug)]
 struct StreamMessage {
+    /// Whether the stream is starting or ending
     starting: bool,
 }
 
@@ -541,6 +576,8 @@ impl Handler<GetProducerMessage> for Source {
     }
 }
 
+/// Sent from [`Source`] to [`NodeManager`] to notify that
+/// it is stopped
 #[derive(Debug)]
 pub struct SourceStoppedMessage {
     pub id: String,
@@ -570,6 +607,8 @@ impl Handler<ErrorMessage> for Source {
     }
 }
 
+/// Sent by the [`Source`] to notify itself that a new `fallbackswitch`
+/// was added in `fallbacksrc`
 #[derive(Debug)]
 struct NewSwitchMessage(gst::Element);
 
@@ -585,6 +624,8 @@ impl Handler<NewSwitchMessage> for Source {
     }
 }
 
+/// Sent by the [`Source`] to notify itself that the `urisourcebin`
+/// was added in `fallbacksrc`
 #[derive(Debug)]
 struct NewSourceBinMessage(gst::Element);
 
@@ -602,6 +643,8 @@ impl Handler<NewSourceBinMessage> for Source {
     }
 }
 
+/// Sent by the [`Source`] to notify itself that the status of one
+/// of the monitored elements changed
 #[derive(Debug)]
 struct SourceStatusMessage;
 

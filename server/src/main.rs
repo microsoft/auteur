@@ -1,3 +1,25 @@
+#![allow(rustdoc::private_intra_doc_links)]
+
+//! rtmp-switcher is a service that implements a
+//! [`control interface`](rtmp_switcher_controlling::controller)
+//! around a [`graph of live processing nodes`](crate::node).
+//!
+//! Individual nodes can be scheduled to form a timeline, an example
+//! use case is creating and managing a "TV channel":
+//!
+//! * Create a RTMP [`Destination`](crate::destination::Destination) node, start it
+//! * Create a [`Mixer`](crate::mixer::Mixer), connect it to the destination, start it
+//! * Create [`Source`](crate::source::Source) nodes, connect them to the mixer, and schedule
+//!   them to play one after the other
+//!
+//! The service can of course be used for many other applications.
+//!
+//! A companion application (`rtmp_switcher_controller`) is provided as an
+//! example client.
+//!
+//! The design of this project is similar to that of [Brave](https://github.com/bbc/brave),
+//! the implementation choices are different however.
+
 // Copyright (C) 2021 Mathieu Duponchelle <mathieu@centricular.com>
 //
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
@@ -20,6 +42,7 @@ use tracing_subscriber::prelude::*;
 
 use std::fs;
 
+/// Application entry point
 fn main() -> Result<(), Error> {
     let cfg = Config::from_args();
 

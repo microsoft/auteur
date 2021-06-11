@@ -1,6 +1,4 @@
-// Copyright (C) 2021 Mathieu Duponchelle <mathieu@centricular.com>
-//
-// Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
+//! Configuration options for the application
 
 use std::path::PathBuf;
 use structopt::StructOpt;
@@ -23,6 +21,7 @@ pub struct Config {
     /// Certificate private key file.
     #[structopt(short = "k", long)]
     pub key_file: Option<PathBuf>,
+    /// Where logs should be stored
     #[structopt(long)]
     pub log_path: Option<PathBuf>,
 }

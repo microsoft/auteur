@@ -1,6 +1,4 @@
-// Copyright (C) 2021 Mathieu Duponchelle <mathieu@centricular.com>
-//
-// Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
+//! An example client to interface with the rtmp switcher service
 
 use anyhow::Error;
 use chrono::{DateTime, Utc};
@@ -18,6 +16,7 @@ use rtmp_switcher_controlling::controller::{
 #[derive(Clap, Debug)]
 #[clap(author = "Mathieu Duponchelle <mathieu@centricular.com>")]
 #[clap(setting = AppSettings::ColoredHelp)]
+/// Top-level options
 struct Opts {
     /// Address of the rtmp switcher, e.g. https://localhost:8080
     server: String,
@@ -28,6 +27,7 @@ struct Opts {
     subcmd: SubCommand,
 }
 
+/// Top-level subcommands
 #[derive(Clap, Debug)]
 enum SubCommand {
     /// Create and connect nodes
@@ -52,6 +52,7 @@ enum SubCommand {
     },
 }
 
+/// Create and connect nodes
 #[derive(Clap, Debug)]
 enum NodeSubCommand {
     /// Create a new node
@@ -96,6 +97,7 @@ enum NodeSubCommand {
     },
 }
 
+/// Node-specific creation commands
 #[derive(Clap, Debug)]
 enum CreateNodeSubCommand {
     /// Create a new source
@@ -129,6 +131,7 @@ enum CreateNodeSubCommand {
     },
 }
 
+/// Create a destination
 #[derive(Clap, Debug)]
 enum CreateDestinationSubCommand {
     /// Create a new RTMP destination
@@ -152,6 +155,7 @@ enum CreateDestinationSubCommand {
     },
 }
 
+/// Source-specific commands
 #[derive(Clap, Debug)]
 enum SourceSubCommand {
     /// Cue a source for playback
@@ -167,6 +171,7 @@ enum SourceSubCommand {
     },
 }
 
+/// Destination-specific commands
 #[derive(Clap, Debug)]
 enum DestinationSubCommand {
     /// Cue a destination for streaming
@@ -182,6 +187,7 @@ enum DestinationSubCommand {
     },
 }
 
+/// Mixer-specific commands
 #[derive(Clap, Debug)]
 enum MixerSubCommand {
     /// Cue a mixer for .. mixing
@@ -220,6 +226,7 @@ enum MixerSubCommand {
     },
 }
 
+/// Client application entry point
 fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
 

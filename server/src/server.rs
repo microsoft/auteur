@@ -1,6 +1,4 @@
-// Copyright (C) 2021 Mathieu Duponchelle <mathieu@centricular.com>
-//
-// Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
+//! Implementation of the HTTP service
 
 use crate::config::Config;
 use crate::controller::Controller;

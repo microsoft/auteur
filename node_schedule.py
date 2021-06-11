@@ -169,3 +169,5 @@ if __name__ == '__main__':
     start_mixer('channel-1')
 
     link_id = schedule_source('file:///home/meh/Videos/big_buck_bunny_720_stereo.mp4', 'bbb', 'channel-1', later(5))
+
+    get_status('bbb')

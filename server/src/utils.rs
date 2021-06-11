@@ -1,3 +1,5 @@
+//! A set of utilities for all nodes to use
+
 use std::collections::HashMap;
 use std::mem;
 use std::sync::{atomic, Arc, Mutex};
@@ -12,9 +14,16 @@ use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use tracing::{debug, error, instrument, trace, warn};
 
+/// The interface for transporting media data from one node
+/// to another.
+///
+/// A producer is essentially a GStreamer `appsink` whose output
+/// is sent to a set of consumers, who are essentially `appsrc` wrappers
 #[derive(Debug, Clone)]
 pub struct StreamProducer {
+    /// The appsink to dispatch data for
     appsink: gst_app::AppSink,
+    /// The consumers to dispatch data to
     consumers: Arc<Mutex<StreamConsumers>>,
 }
 
@@ -27,6 +36,7 @@ impl PartialEq for StreamProducer {
 impl Eq for StreamProducer {}
 
 impl StreamProducer {
+    /// Add an appsrc to dispatch data to
     pub fn add_consumer(&self, consumer: &gst_app::AppSrc, consumer_id: &str) {
         let mut consumers = self.consumers.lock().unwrap();
         if consumers.consumers.get(consumer_id).is_some() {
@@ -66,6 +76,7 @@ impl StreamProducer {
         );
     }
 
+    /// Remove a consumer appsrc by id
     pub fn remove_consumer(&self, consumer_id: &str) {
         if let Some(consumer) = self.consumers.lock().unwrap().consumers.remove(consumer_id) {
             debug!(appsink = %self.appsink.name(), appsrc = %consumer.appsrc.name(), "Removed consumer");
@@ -74,14 +85,23 @@ impl StreamProducer {
         }
     }
 
+    /// Stop discarding data samples and start forwarding them to the consumers.
+    ///
+    /// This is useful for example for prerolling live sources.
     pub fn forward(&self) {
         self.consumers.lock().unwrap().discard = false;
     }
 
+    /// Get the GStreamer `appsink` wrapped by this producer
     pub fn appsink(&self) -> &gst_app::AppSink {
         &self.appsink
     }
 
+    /// Get the unique identifiers of all the consumers currently connected
+    /// to this producer
+    ///
+    /// This is useful for disconnecting those automatically when the parent node
+    /// stops
     pub fn get_consumer_ids(&self) -> Vec<String> {
         self.consumers
             .lock()
@@ -230,23 +250,37 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
     }
 }
 
+/// Wrapper around a HashMap of consumers, exists for thread safety
+/// and also protects some of the producer state
 #[derive(Debug)]
 struct StreamConsumers {
+    /// The currently-observed latency
     current_latency: Option<gst::ClockTime>,
+    /// Whether the consumers' appsrc latency needs updating
     latency_updated: bool,
+    /// The consumers, link id -> consumer
     consumers: HashMap<String, StreamConsumer>,
+    /// Whether appsrc samples should be forwarded to consumers yet
     discard: bool,
 }
 
+/// Wrapper around a consumer's `appsrc`
 #[derive(Debug)]
 struct StreamConsumer {
+    /// The GStreamer `appsrc` of the consumer
     appsrc: gst_app::AppSrc,
+    /// The id of a pad probe that intercepts force-key-unit events
     fku_probe_id: Option<gst::PadProbeId>,
+    /// Whether an initial latency was forwarded to the `appsrc`
     forwarded_latency: atomic::AtomicBool,
+    /// Whether a first buffer has made it through, used to determine
+    /// whether a new key unit should be requested. Only useful for encoded
+    /// streams.
     first_buffer: atomic::AtomicBool,
 }
 
 impl StreamConsumer {
+    /// Create a new consumer
     fn new(appsrc: &gst_app::AppSrc, fku_probe_id: gst::PadProbeId, consumer_id: &str) -> Self {
         let consumer_id = consumer_id.to_string();
         appsrc.set_callbacks(
@@ -298,25 +332,15 @@ impl std::borrow::Borrow<gst_app::AppSrc> for StreamConsumer {
     }
 }
 
-/// WebRTC related signalling messages used in multiple places.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum WebRTCMessage {
-    Ice {
-        candidate: String,
-        sdp_mline_index: u32,
-    },
-    Sdp {
-        #[serde(rename = "type")]
-        type_: String,
-        sdp: String,
-    },
-}
-
+/// Wrapper around `gst::ElementFactory::make` with a better error
+/// message
 pub fn make_element(element: &str, name: Option<&str>) -> Result<gst::Element, Error> {
     gst::ElementFactory::make(element, name)
         .map_err(|err| anyhow!("Failed to make element {}: {}", element, err.message))
 }
 
+/// Maps GStreamer messages for consumption by a [`PipelineManager`]
+/// actor
 #[derive(Debug)]
 struct BusMessage(gst::Message);
 
@@ -324,6 +348,8 @@ impl Message for BusMessage {
     type Result = ();
 }
 
+/// Sent from nodes to [`PipelineManager`] to wait for EOS to have
+/// been processed by the pipeline
 #[derive(Debug)]
 pub struct WaitForEosMessage;
 
@@ -349,12 +375,20 @@ impl Handler<WaitForEosMessage> for PipelineManager {
     }
 }
 
+/// A wrapper around [`gst::Pipeline`] for monitoring its bus. May send
+/// messages to signal an error to an appropriate recipient (typically the
+/// creator node)
 #[derive(Debug)]
 pub struct PipelineManager {
+    /// The wrapped pipeline
     pipeline: gst::Pipeline,
+    /// The recipient for potential error messages
     recipient: actix::WeakRecipient<ErrorMessage>,
+    /// The identifier of the creator node, for tracing
     id: String,
+    /// To signal that EOS was processed
     eos_sender: Option<oneshot::Sender<()>>,
+    /// To wait for EOS to be processed
     eos_receiver: Option<oneshot::Receiver<()>>,
 }
 
@@ -453,6 +487,7 @@ impl StreamHandler<BusMessage> for PipelineManager {
 }
 
 impl PipelineManager {
+    /// Create a new manager
     pub fn new(pipeline: gst::Pipeline, recipient: WeakRecipient<ErrorMessage>, id: &str) -> Self {
         let (eos_sender, eos_receiver) = oneshot::channel::<()>();
 
@@ -466,6 +501,7 @@ impl PipelineManager {
     }
 }
 
+/// Sent from [`PipelineManager`] to nodes to signal an error
 #[derive(Debug)]
 pub struct ErrorMessage(pub String);
 
@@ -473,6 +509,7 @@ impl Message for ErrorMessage {
     type Result = ();
 }
 
+/// Sent from nodes to [`PipelineManager`] to tear it down
 #[derive(Debug)]
 pub struct StopManagerMessage;
 
@@ -488,13 +525,15 @@ impl Handler<StopManagerMessage> for PipelineManager {
     }
 }
 
+/// Utility function to perform sanity checks on reschedule commands.
+///
+/// Transactional, either updates all times or none.
 pub fn update_times(
     current_cue_time: &mut Option<DateTime<Utc>>,
     new_cue_time: &Option<DateTime<Utc>>,
     current_end_time: &mut Option<DateTime<Utc>>,
     new_end_time: &Option<DateTime<Utc>>,
 ) -> Result<(), Error> {
-    /* Transactional, either update completely or not at all */
     if let Some(cue_time) = new_cue_time {
         if let Some(end_time) = new_end_time.as_ref().or(current_end_time.as_ref()) {
             if end_time <= cue_time {

@@ -1,6 +1,7 @@
-// Copyright (C) 2021 Mathieu Duponchelle <mathieu@centricular.com>
-//
-// Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
+//! Interface with remote controller
+//!
+//! Receives JSON messages through websockets, conforming with
+//! [`this protocol`](rtmp_switcher_controlling::controller)
 
 use crate::node::{CommandMessage, NodeManager};
 
@@ -19,6 +20,7 @@ use rtmp_switcher_controlling::controller::{
 /// Actor that represents an application controller.
 #[derive(Debug)]
 pub struct Controller {
+    /// Address of the remote controller
     remote_addr: String,
 }
 
@@ -36,6 +38,8 @@ impl Controller {
         })
     }
 
+    /// Send a command to [`NodeManager`] for dispatching, then notify
+    /// the remote controller
     fn send_command_future(
         &self,
         command_id: uuid::Uuid,
@@ -97,6 +101,7 @@ impl Controller {
         }
     }
 
+    /// Shut down the controller
     fn shutdown(&mut self, ctx: &mut ws::WebsocketContext<Self>, from_close: bool) {
         debug!("Shutting down controller {}", self.remote_addr);
 
@@ -145,9 +150,13 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for Controller {
     }
 }
 
+/// Sent from [`Controller` to itself to notify the remote controller
+/// of an error.
 #[derive(Debug)]
 struct ErrorMessage {
+    /// Error message
     msg: String,
+    /// Identifier of the command that caused the error
     command_id: Option<uuid::Uuid>,
 }
 

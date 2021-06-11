@@ -1,3 +1,12 @@
+//! A destination processing node.
+//!
+//! The actual destination depends on its family, for example RTMP or LocalFile
+//! are supported.
+//!
+//! Destinations have a special [`stopping state`](DestinationStatus::Stopping)
+//! during which EOS will be propagated down their pipeline before actually
+//! stopping.
+
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
@@ -17,25 +26,41 @@ use crate::utils::{
     WaitForEosMessage,
 };
 
+/// Represents the potential connection to a producer
 struct ConsumerSlot {
+    /// Identifier of the slot
     id: String,
+    /// Video producer
     video_producer: StreamProducer,
+    /// Audio producer
     audio_producer: StreamProducer,
 }
 
+/// The Destination actor
 pub struct Destination {
+    /// Unique identifier
     id: String,
+    /// Defines the nature of the destination
     family: DestinationFamily,
+    /// When the destination will start
     cue_time: Option<DateTime<Utc>>,
+    /// When the destination will stop
     end_time: Option<DateTime<Utc>>,
+    /// The status of the destination
     status: DestinationStatus,
+    /// The wrapped pipeline
     pipeline: gst::Pipeline,
+    /// A helper for managing the pipeline
     pipeline_manager: Option<Addr<PipelineManager>>,
+    /// Video input to the node
     video_appsrc: gst_app::AppSrc,
+    /// Audio input to the node
     audio_appsrc: gst_app::AppSrc,
+    /// Optional connection point
     consumer_slot: Option<ConsumerSlot>,
-
+    /// Scheduling timer
     state_handle: Option<SpawnHandle>,
+    /// Statistics timer
     monitor_handle: Option<SpawnHandle>,
 }
 
@@ -83,6 +108,7 @@ impl Actor for Destination {
 }
 
 impl Destination {
+    /// Create a destination
     pub fn new(id: &str, family: &DestinationFamily) -> Self {
         let video_appsrc =
             gst::ElementFactory::make("appsrc", Some(&format!("destination-video-appsrc-{}", id)))
@@ -119,6 +145,7 @@ impl Destination {
         }
     }
 
+    /// RTMP family
     #[instrument(level = "debug", name = "streaming", skip(self, ctx), fields(id = %self.id))]
     fn start_rtmp_pipeline(&mut self, ctx: &mut Context<Self>, uri: &String) -> Result<(), Error> {
         let vconv = make_element("videoconvert", None)?;
@@ -254,6 +281,7 @@ impl Destination {
         Ok(())
     }
 
+    /// LocalFile family
     #[instrument(level = "debug", name = "saving to local file", skip(self, ctx), fields(id = %self.id))]
     fn start_local_file_pipeline(
         &mut self,
@@ -336,6 +364,7 @@ impl Destination {
         Ok(())
     }
 
+    /// Progress through our state machine
     #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
     fn schedule_state(&mut self, ctx: &mut Context<Self>) {
         if let Some(handle) = self.state_handle {
@@ -391,6 +420,7 @@ impl Destination {
         }
     }
 
+    /// Implement Play command
     #[instrument(level = "trace", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn start(
         &mut self,
@@ -424,6 +454,7 @@ impl Destination {
         Ok(())
     }
 
+    /// Implement Connect command
     #[instrument(level = "debug", name = "connecting", skip(self, video_producer, audio_producer), fields(id = %self.id))]
     fn connect(
         &mut self,
@@ -450,6 +481,7 @@ impl Destination {
         Ok(())
     }
 
+    /// Implement Disconnect command
     #[instrument(level = "debug", name = "disconnecting", skip(self), fields(id = %self.id))]
     fn disconnect(&mut self, link_id: &str) -> Result<(), Error> {
         if let Some(slot) = self.consumer_slot.take() {
@@ -467,6 +499,7 @@ impl Destination {
         }
     }
 
+    /// Implement Reschedule command
     #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn reschedule(
         &mut self,
@@ -495,6 +528,7 @@ impl Destination {
         Ok(())
     }
 
+    /// Wait for EOS to propagate down our pipeline before stopping
     // Returns true if calling code should wait before fully stopping
     #[instrument(level = "debug", name = "checking if waiting for EOS is needed", skip(self, ctx), fields(id = %self.id))]
     fn wait_for_eos(&mut self, ctx: &mut Context<Self>) -> bool {
@@ -561,8 +595,11 @@ impl Handler<DestinationCommandMessage> for Destination {
     }
 }
 
+/// Sent from [`Destination`] to [`NodeManager`] to notify that
+/// it is stopped
 #[derive(Debug)]
 pub struct DestinationStoppedMessage {
+    /// Unique identifier
     pub id: String,
 }
 

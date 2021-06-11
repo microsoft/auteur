@@ -21,15 +21,21 @@ use rtmp_switcher_controlling::controller::{
 /// Controller handle.
 #[derive(Debug, Clone)]
 pub struct Controller {
+    /// Sender for the event loop
     event_sender: mpsc::UnboundedSender<ControllerEvent>,
+    /// Sender for the websocket messages
     websocket_sender: mpsc::UnboundedSender<ControllerMessage>,
+    /// Whether the controller was stopped
     stopped: Arc<atomic::AtomicBool>,
+    /// Whether the controller should exit the event loop after receiving
+    /// the reply for a command with that id
     exit_on_response_id: Arc<Mutex<Option<uuid::Uuid>>>,
 }
 
 /// Future that can be awaited on to wait for the controller to stop or error out.
 #[derive(Debug)]
 pub struct ControllerJoinHandle {
+    /// The handle
     handle: tokio::task::JoinHandle<Result<(), Error>>,
 }
 
@@ -239,6 +245,7 @@ impl Controller {
         Ok(ws)
     }
 
+    /// Send a command to the event loop
     pub async fn run_command(&mut self, command: Command, exit_on_response: bool) {
         let command_id = uuid::Uuid::new_v4();
 

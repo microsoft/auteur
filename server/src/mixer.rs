@@ -1,3 +1,8 @@
+//! A mixer processing node.
+//!
+//! A mixer can have multiple consumer slots, which will be routed
+//! through `compositor` and `audiomixer` elements.
+
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
@@ -21,48 +26,72 @@ use crate::utils::{
 
 const DEFAULT_FALLBACK_TIMEOUT: u32 = 500;
 
+/// Represents a connection to a producer
 struct ConsumerSlot {
+    /// Video producer
     video_producer: StreamProducer,
+    /// Audio producer
     audio_producer: StreamProducer,
+    /// Video input to `compositor`
     video_appsrc: gst_app::AppSrc,
+    /// Audio input to `audiomixer`
     audio_appsrc: gst_app::AppSrc,
-
+    /// Processing elements before `compositor`
     video_bin: Option<gst::Bin>,
+    /// Processing elements before `audiomixer`
     audio_bin: Option<gst::Bin>,
-
+    /// Volume of the `audiomixer` pad
     volume: f64,
-
+    /// Used to reconfigure the geometry of the input video stream
     video_capsfilter: Option<gst::Element>,
 }
 
+/// Used from our `compositor::samples_selected` callback
 #[derive(Debug)]
 pub struct MixingState {
+    /// For how long no pad other than our base plate has selected samples
     base_plate_timeout: gst::ClockTime,
+    /// Whether our base plate is opaque
     showing_base_plate: bool,
 }
 
+/// The Mixer actor
 pub struct Mixer {
+    /// Unique identifier
     id: String,
+    /// When the mixer will start
     cue_time: Option<DateTime<Utc>>,
+    /// When the mixer will stop
     end_time: Option<DateTime<Utc>>,
+    /// The status of the mixer
     status: MixerStatus,
+    /// The wrapped pipeline
     pipeline: gst::Pipeline,
+    /// A helper for managing the pipeline
     pipeline_manager: Option<Addr<PipelineManager>>,
+    /// Output video producer
     video_producer: StreamProducer,
+    /// Output audio producer
     audio_producer: StreamProducer,
+    /// Input connection points
     consumer_slots: HashMap<String, ConsumerSlot>,
+    /// `compositor`
     audio_mixer: Option<gst::Element>,
+    /// `audiomixer`
     video_mixer: Option<gst::Element>,
-
+    /// Mixing geometry and format
     config: MixerConfig,
-
+    /// Used for showing and hiding the base plate
     mixing_state: Arc<Mutex<MixingState>>,
+    /// Optional timeout for showing the base plate
     fallback_timeout: gst::ClockTime,
-
+    /// For controlling the output sample rate
     audio_capsfilter: Option<gst::Element>,
+    /// For resizing the base plate
     base_plate_capsfilter: Option<gst::Element>,
+    /// For resizing our output video stream
     video_capsfilter: Option<gst::Element>,
-
+    /// Scheduling timer
     state_handle: Option<SpawnHandle>,
 }
 
@@ -101,6 +130,7 @@ impl Actor for Mixer {
 }
 
 impl Mixer {
+    /// Create a mixer
     pub fn new(id: &str, config: MixerConfig) -> Self {
         let pipeline = gst::Pipeline::new(None);
 
@@ -147,6 +177,7 @@ impl Mixer {
         }
     }
 
+    /// Connect an input slot to `compositor` and `audiomixer`
     #[instrument(
         level = "debug",
         name = "connecting",
@@ -240,6 +271,8 @@ impl Mixer {
         Ok(())
     }
 
+    /// Build the base plate. It may be either a live videotestsrc, or an
+    /// imagefreeze'd image when a fallback image was specified
     #[instrument(level = "debug", name = "building base plate", skip(self), fields(id = %self.id))]
     fn build_base_plate(&mut self) -> Result<gst::Element, Error> {
         let bin = gst::Bin::new(None);
@@ -311,6 +344,8 @@ impl Mixer {
         Ok(bin.upcast())
     }
 
+    /// Show or hide our base plate. Will be used in the future for interpolating
+    /// properties of mixer pads
     #[instrument(name = "Updating mixing state", level = "trace")]
     fn update_mixing_state(
         agg: &gst_base::Aggregator,
@@ -356,6 +391,7 @@ impl Mixer {
         }
     }
 
+    /// Start our pipeline when cue_time is reached
     #[instrument(level = "debug", name = "mixing", skip(self, ctx), fields(id = %self.id))]
     fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
         let vsrc = self.build_base_plate()?;
@@ -549,6 +585,7 @@ impl Mixer {
         }
     }
 
+    /// Implement UpdateConfig
     #[instrument(level = "debug", name = "updating config", skip(self), fields(id = %self.id))]
     fn update_config(
         &mut self,
@@ -636,6 +673,7 @@ impl Mixer {
         Ok(())
     }
 
+    /// Progress through our state machine
     #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
     fn schedule_state(&mut self, ctx: &mut Context<Self>) {
         if let Some(handle) = self.state_handle {
@@ -684,6 +722,7 @@ impl Mixer {
         }
     }
 
+    /// Implement Start command
     #[instrument(level = "trace", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn start(
         &mut self,
@@ -714,6 +753,7 @@ impl Mixer {
         Ok(())
     }
 
+    /// Implement Connect command
     #[instrument(level = "debug", name = "connecting", skip(self, video_producer, audio_producer), fields(id = %self.id))]
     fn connect(
         &mut self,
@@ -779,6 +819,7 @@ impl Mixer {
         Ok(())
     }
 
+    /// Implement Disconnect command
     #[instrument(level = "debug", name = "disconnecting", skip(self), fields(id = %self.id))]
     fn disconnect(&mut self, slot_id: &str) -> Result<(), Error> {
         if let Some(slot) = self.consumer_slots.remove(slot_id) {
@@ -815,6 +856,7 @@ impl Mixer {
         }
     }
 
+    /// Implement Reschedule command
     #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
     fn reschedule(
         &mut self,
@@ -877,10 +919,15 @@ impl Handler<MixerCommandMessage> for Mixer {
     }
 }
 
+/// Sent from [`Mixer`] to [`NodeManager`] to notify that
+/// it is stopped
 #[derive(Debug)]
 pub struct MixerStoppedMessage {
+    /// Unique identifier
     pub id: String,
+    /// The output video producer
     pub video_producer: StreamProducer,
+    /// The output audio producer
     pub audio_producer: StreamProducer,
 }
 

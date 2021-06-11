@@ -1,6 +1,6 @@
-// Copyright (C) 2021 Mathieu Duponchelle <mathieu@centricular.com>
-//
-// Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
+//! Definition of the service protocol
+//!
+//! WARNING: unstable
 
 use chrono::offset::Utc;
 use chrono::DateTime;
@@ -11,8 +11,11 @@ use std::collections::HashMap;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceCommand {
+    /// Schedule a source for playback, possibly immediately
     Play {
+        /// When to start playback. Immediate if None
         cue_time: Option<DateTime<Utc>>,
+        /// When to end playback. Never or on EOS if None
         end_time: Option<DateTime<Utc>>,
     },
 }
@@ -21,8 +24,11 @@ pub enum SourceCommand {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DestinationCommand {
+    /// Schedule a destination for streaming, possibly immediately
     Start {
+        /// When to start streaming. Immediate if None
         cue_time: Option<DateTime<Utc>>,
+        /// When to end streaming. Never if None
         end_time: Option<DateTime<Utc>>,
     },
 }
@@ -31,83 +37,134 @@ pub enum DestinationCommand {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MixerCommand {
+    /// Schedule a mixer for .. mixing, possibly immediately
     Start {
+        /// When to start mixing. Immediate if None
         cue_time: Option<DateTime<Utc>>,
+        /// When to end mixing. Never if None
         end_time: Option<DateTime<Utc>>,
     },
+    /// Update the output format of the mixer
     UpdateConfig {
+        /// Width of the output picture
         width: Option<i32>,
+        /// Height of the output picture
         height: Option<i32>,
+        /// Sample rate of the output audio
         sample_rate: Option<i32>,
     },
+    /// Set the volume of an input stream
     SetSlotVolume {
+        /// Unique identifier of the slot
         slot_id: String,
+        /// New volume, 0.0 -> 10.0, 1.0 default
         volume: f64,
     },
 }
 
+/// Node-specific command variants
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeCommands {
+    /// Source-specific commands
     Source(SourceCommand),
+    /// Destination-specific commands
     Destination(DestinationCommand),
+    /// Mixer-specific commands
     Mixer(MixerCommand),
 }
 
+/// Node-specific commands
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct NodeCommand {
+    /// Unique identifier of the node
     pub id: String,
+    /// The command to execute
     pub command: NodeCommands,
 }
 
 // Simplistic, will be extended
+/// Configuration of a mixer's output stream
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct MixerConfig {
+    /// The width of the output picture
     pub width: i32,
+    /// The height of the output picture
     pub height: i32,
+    /// The sample rate of the output audio stream
     pub sample_rate: i32,
+    /// Whether an image should be displayed as the base plate
     pub fallback_image: Option<String>,
+    /// After how long to show the image when no other input stream
+    /// is being mixed
     pub fallback_timeout: Option<u32>,
 }
 
+/// Generic commands for creating and removing nodes, managing connections
+/// and rescheduling
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphCommand {
+    /// Create a source
     CreateSource {
+        /// Unique identifier of the source
         id: String,
+        /// URI to play back
         uri: String,
     },
+    /// Create a destination
     CreateDestination {
+        /// Unique identifier of the destination
         id: String,
+        /// Type of the destination
         family: DestinationFamily,
     },
+    /// Create a mixer
     CreateMixer {
+        /// Unique identifier of the mixer
         id: String,
+        /// Initial configuration of the mixer
         config: MixerConfig,
     },
+    /// Connect a producer with a consumer
     Connect {
+        /// Unique identifier of the created connection
         link_id: String,
+        /// Identifier of an existing producer
         src_id: String,
+        /// Identifier of an existing consumer
         sink_id: String,
     },
+    /// Reschedule any node
     Reschedule {
+        /// Identifier of an existing node
         id: String,
+        /// When to start the node, the current time is left unchanged if None
         cue_time: Option<DateTime<Utc>>,
+        /// When to stop the node, the current time is left unchanged if None
         end_time: Option<DateTime<Utc>>,
     },
+    /// Remove a node
     Remove {
+        /// Identifier of an existing node
         id: String,
     },
+    /// Remove a connection between two nodes
     Disconnect {
+        /// Identifier of an existing connection
         link_id: String,
     },
+    /// Retrieve the status of one or all nodes
     Status {
+        /// The id of an existing node, or None, in which case the status
+        /// of all nodes in the system will be gathered
         id: Option<String>,
     },
 }
 
+/// Command variants
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Command {
@@ -125,82 +182,130 @@ pub struct ControllerMessage {
     pub command: Command,
 }
 
+/// The status of a source
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceStatus {
+    /// The source is not running yet
     Initial,
+    /// The source has started prerolling
     Prerolling,
+    /// The source is playing
     Playing,
+    /// The source has stopped
     Stopped,
 }
 
+/// The status of a destination
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DestinationStatus {
+    /// The destination is not running yet
     Initial,
+    /// The destination is streaming
     Streaming,
+    /// The destination is stopping and waiting for EOS to propagate
     Stopping,
+    /// The destination has stopped
     Stopped,
 }
 
+/// The status of a mixer
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MixerStatus {
+    /// The mixer hasn't started mixing yet
     Initial,
+    /// The mixer is mixing
     Mixing,
+    /// The mixer has stopped
     Stopped,
 }
 
+/// The available types of destinations
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DestinationFamily {
+    /// Stream to a RTMP server
     RTMP {
+        /// The URI of the server
         uri: String,
     },
+    /// Stream to a local file. No control is currently offered for determining
+    /// the encoding and container format, the topology of the output file will
+    /// be an H264 stream and an AAC stream in a MP4 container.
     LocalFile {
+        /// The base name of the file(s), eg `/path/to/video`
         base_name: String,
+        /// An optional duration after which a new file should be opened.
+        /// If provided, the output files will be named `/path/to/video_%05d.mp4,
+        /// otherwise the single output file will be named `/path/to/video.mp4`
         max_size_time: Option<u32>,
     },
 }
 
+/// Source-specific information
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct SourceInfo {
+    /// The URI played back by the source
     pub uri: String,
+    /// The identifiers of the consumers of the source
     pub consumer_slot_ids: Vec<String>,
+    /// When the source was scheduled to start
     pub cue_time: Option<DateTime<Utc>>,
+    /// When the source was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
+    /// The status of the source
     pub status: SourceStatus,
 }
 
+/// Destination-specific information
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct DestinationInfo {
+    /// The type of the destination
     pub family: DestinationFamily,
+    /// The identifier of the destination's input slot
     pub slot_id: Option<String>,
+    /// When the destination was scheduled to start
     pub cue_time: Option<DateTime<Utc>>,
+    /// When the destination was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
+    /// The status of the destination
     pub status: DestinationStatus,
 }
 
+/// Mixer-slot-specific information
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct MixerSlotInfo {
+    /// The volume of the slot
     pub volume: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Mixer-specific information
 pub struct MixerInfo {
+    /// The width of the output picture of the mixer
     pub width: i32,
+    /// The height of the output picture of the mixer
     pub height: i32,
+    /// The sample rate of the output audio stream of the mixer
     pub sample_rate: i32,
+    /// The mixer's input slots
     pub slots: HashMap<String, MixerSlotInfo>,
+    /// The identifiers of the consumers of the mixer
     pub consumer_slot_ids: Vec<String>,
+    /// When the mixer was scheduled to start
     pub cue_time: Option<DateTime<Utc>>,
+    /// When the mixer was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
+    /// The status of the mixer
     pub status: MixerStatus,
 }
 
+/// Info variants
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeInfo {
@@ -209,6 +314,7 @@ pub enum NodeInfo {
     Mixer(MixerInfo),
 }
 
+/// A map of node-specific information in reply to a status command
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct Status {
@@ -219,8 +325,16 @@ pub struct Status {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CommandResult {
-    Error { message: String },
-    Success { status: Option<Status> },
+    /// The command resulted in an error
+    Error {
+        /// The error message
+        message: String,
+    },
+    /// The command was successful
+    Success {
+        /// An optional [`Status`]
+        status: Option<Status>,
+    },
 }
 
 /// Messages sent from the the server to the controller.

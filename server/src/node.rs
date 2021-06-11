@@ -1,3 +1,11 @@
+//! Implementation of a node management system
+//!
+//! Nodes are Actix actors in charge of building
+//! and scheduling the state of GStreamer pipelines.
+//!
+//! Nodes can produce and / or consume data, and are connected to one
+//! another through [`StreamProducer`](crate::utils::StreamProducer)
+
 use crate::destination::{Destination, DestinationStoppedMessage};
 use crate::mixer::{Mixer, MixerStoppedMessage};
 use crate::source::{Source, SourceStoppedMessage};
@@ -13,51 +21,15 @@ use rtmp_switcher_controlling::controller::{
 };
 use std::collections::HashMap;
 use tracing::{debug, info, instrument, trace, warn};
-use tracing_futures::Instrument;
 use tracing_actix::ActorInstrument;
+use tracing_futures::Instrument;
 
 /// NodeManager acts as a tracker of all nodes, and dispatches
 /// messages accordingly
-
-#[derive(Debug)]
-pub struct CommandMessage {
-    pub command: Command,
-}
-
-impl Message for CommandMessage {
-    type Result = Result<Option<Status>, Error>;
-}
-
-#[derive(Debug)]
-pub struct SourceCommandMessage {
-    pub command: SourceCommand,
-}
-
-impl Message for SourceCommandMessage {
-    type Result = Result<(), Error>;
-}
-
-#[derive(Debug)]
-pub struct DestinationCommandMessage {
-    pub command: DestinationCommand,
-}
-
-impl Message for DestinationCommandMessage {
-    type Result = Result<(), Error>;
-}
-
-#[derive(Debug)]
-pub struct MixerCommandMessage {
-    pub command: MixerCommand,
-}
-
-impl Message for MixerCommandMessage {
-    type Result = Result<(), Error>;
-}
-
+///
 /// Nodes can be producers, consumers or both. NodeManager knows
 /// how to make logical links from one to another, actual connection
-/// with StreamProducer::add_consumer() is delegated to the consumers
+/// to [`producers`](crate::utils::StreamProducer) is delegated to the consumers
 /// however, as they might want to only perform the connection once their
 /// state has progressed.
 ///
@@ -66,6 +38,78 @@ impl Message for MixerCommandMessage {
 /// by consumers that expose multiple consumer slots to identify the
 /// correct slot to disconnect (eg mixers)
 
+// We track separately:
+//
+// * all nodes by type
+//
+// * the links that have been established, used when disconnecting
+//
+// * all nodes that can consume data
+//
+// * all nodes that can produce data
+
+pub struct NodeManager {
+    /// All nodes by id
+    nodes: HashMap<String, Node>,
+    /// All links, link_id -> consumer recipient
+    links: HashMap<String, Recipient<ConsumerMessage>>,
+    /// All consumers by id
+    consumers: HashMap<String, Recipient<ConsumerMessage>>,
+    /// All producers by id
+    producers: HashMap<String, Recipient<GetProducerMessage>>,
+    /// Used when the manager is "stopping", to ensure all nodes have fully
+    /// stopped before exiting. Useful for propagating EOS.
+    no_more_modes_sender: Option<oneshot::Sender<()>>,
+}
+
+/// Sent from [`controllers`](crate::controller::Controller), this is our
+/// public interface.
+#[derive(Debug)]
+pub struct CommandMessage {
+    /// The command to run
+    pub command: Command,
+}
+
+impl Message for CommandMessage {
+    type Result = Result<Option<Status>, Error>;
+}
+
+/// Source-specific commands, sent from [`NodeManager`] to [`Source`]
+#[derive(Debug)]
+pub struct SourceCommandMessage {
+    /// The command to dispatch to the source node
+    pub command: SourceCommand,
+}
+
+impl Message for SourceCommandMessage {
+    type Result = Result<(), Error>;
+}
+
+/// Destination-specific commands, sent from [`NodeManager`] to [`Destination`]
+#[derive(Debug)]
+pub struct DestinationCommandMessage {
+    /// The command to dispatch to the destination node
+    pub command: DestinationCommand,
+}
+
+impl Message for DestinationCommandMessage {
+    type Result = Result<(), Error>;
+}
+
+/// Mixer-specific commands, sent from [`NodeManager`] to [`Mixer`]
+#[derive(Debug)]
+pub struct MixerCommandMessage {
+    /// The command to dispatch to the mixer node
+    pub command: MixerCommand,
+}
+
+impl Message for MixerCommandMessage {
+    type Result = Result<(), Error>;
+}
+
+/// Getter for [`stream producers`](crate::utils::StreamProducer),
+/// sent from [`NodeManager`] to any producer node to connect them
+/// to consumers
 #[derive(Debug)]
 pub struct GetProducerMessage;
 
@@ -73,13 +117,25 @@ impl Message for GetProducerMessage {
     type Result = Result<(StreamProducer, StreamProducer), Error>;
 }
 
+/// Sent from [`NodeManager`] to any consumer node in order to
+/// let them connect and disconnect from
+/// [`stream producers`](crate::utils::StreamProducer)
 pub enum ConsumerMessage {
+    /// Lets the consumer perform a connection, it should store the
+    /// slot id for latter disconnection, and potentially future
+    /// controlling of slot properties (eg volume on a [`Mixer`] slot)
     Connect {
+        /// The id of the slot
         link_id: String,
+        /// The video producer to connect to
         video_producer: StreamProducer,
+        /// The audio producer to connect to
         audio_producer: StreamProducer,
     },
+    /// Lets the consumer disconnect a slot from its associated
+    /// producers
     Disconnect {
+        /// The id of the slot to disconnect
         slot_id: String,
     },
 }
@@ -88,9 +144,16 @@ impl Message for ConsumerMessage {
     type Result = Result<(), Error>;
 }
 
+/// Reschedule a node, sent from [`NodeManager`] to any [`Node`]
 #[derive(Debug)]
 pub struct ScheduleMessage {
+    /// The new start time of the [`Node`], if [`None`] the current time
+    /// should be left unchanged. If the node was already started, it is
+    /// allowed to error out otherwise.
     pub cue_time: Option<DateTime<Utc>>,
+    /// The new end time of the [`Node`], if [`None`] the current time
+    /// should be left unchanged. If the node was already stopped, it is
+    /// allowed to error out otherwise.
     pub end_time: Option<DateTime<Utc>>,
 }
 
@@ -98,6 +161,14 @@ impl Message for ScheduleMessage {
     type Result = Result<(), Error>;
 }
 
+/// Sent from [`NodeManager`] to any [`Node`] in order to make it initiate
+/// orderly teardown immediately.
+///
+/// Will also be sent from the application to [`NodeManager`] when it is
+/// terminated.
+///
+/// Individual nodes MUST send back stopped messages once they have completely
+/// stopped.
 #[derive(Debug)]
 pub struct StopMessage;
 
@@ -105,6 +176,8 @@ impl Message for StopMessage {
     type Result = Result<(), Error>;
 }
 
+/// Retrieves node-specific information. Sent from [`NodeManager`] to
+/// any [`Node`].
 #[derive(Debug)]
 pub struct GetNodeInfoMessage;
 
@@ -113,15 +186,18 @@ impl Message for GetNodeInfoMessage {
 }
 
 /// All the node types NodeManager supports
-
 #[derive(Clone)]
 enum Node {
+    /// A source node is a producer
     Source(Addr<Source>),
+    /// A destination node is a consumer
     Destination(Addr<Destination>),
+    /// A mixer node is both a consumer and a producer
     Mixer(Addr<Mixer>),
 }
 
 impl Node {
+    /// Reschedule the node
     fn schedule(&mut self, msg: ScheduleMessage) -> ResponseFuture<Result<(), Error>> {
         let recipient: Recipient<ScheduleMessage> = match self {
             Node::Source(addr) => addr.clone().recipient(),
@@ -136,6 +212,7 @@ impl Node {
         })
     }
 
+    /// Stop the node
     fn stop(&mut self) {
         let recipient: Recipient<StopMessage> = match self {
             Node::Source(addr) => addr.clone().recipient(),
@@ -145,6 +222,7 @@ impl Node {
         let _ = recipient.do_send(StopMessage);
     }
 
+    /// Get node-specific info
     fn get_info(&mut self) -> ResponseFuture<Result<NodeInfo, Error>> {
         let recipient: Recipient<GetNodeInfoMessage> = match self {
             Node::Source(addr) => addr.clone().recipient(),
@@ -158,25 +236,6 @@ impl Node {
             }
         })
     }
-}
-
-// We track separately:
-//
-// * all nodes by type
-//
-// * the links that have been established, used when disconnecting
-//
-// * all nodes that can consume data
-//
-// * all nodes that can produce data
-
-pub struct NodeManager {
-    nodes: HashMap<String, Node>,
-    links: HashMap<String, Recipient<ConsumerMessage>>,
-    consumers: HashMap<String, Recipient<ConsumerMessage>>,
-    producers: HashMap<String, Recipient<GetProducerMessage>>,
-
-    no_more_modes_sender: Option<oneshot::Sender<()>>,
 }
 
 impl Default for NodeManager {
@@ -204,6 +263,7 @@ impl SystemService for NodeManager {
 }
 
 impl NodeManager {
+    /// Create a [`Source`] and store it as a producer
     fn create_source(&mut self, id: &str, uri: &str) -> Result<(), Error> {
         if self.nodes.contains_key(id) {
             return Err(anyhow!("A node already exists with id {}", id));
@@ -223,6 +283,7 @@ impl NodeManager {
         Ok(())
     }
 
+    /// Create a [`Destination`] and store it as a consumer
     fn create_destination(&mut self, id: &str, family: &DestinationFamily) -> Result<(), Error> {
         if self.nodes.contains_key(id) {
             return Err(anyhow!("A node already exists with id {}", id));
@@ -242,6 +303,7 @@ impl NodeManager {
         Ok(())
     }
 
+    /// Create a [`Mixer`] and store it as both a consumer and a producer
     fn create_mixer(&mut self, id: &str, config: MixerConfig) -> Result<(), Error> {
         if self.nodes.contains_key(id) {
             return Err(anyhow!("A node already exists with id {}", id));
@@ -261,6 +323,7 @@ impl NodeManager {
         Ok(())
     }
 
+    /// Remove a node from our collections by id
     fn remove_node(&mut self, id: &str) {
         let _ = self.nodes.remove(id);
         if self.nodes.is_empty() {
@@ -270,6 +333,7 @@ impl NodeManager {
         }
     }
 
+    /// Tell a node to stop, by id
     fn stop_node(&mut self, id: &str) -> Result<(), Error> {
         if let Some(node) = self.nodes.get_mut(id) {
             node.stop();
@@ -279,10 +343,13 @@ impl NodeManager {
         }
     }
 
+    /// Tell a node to disconnect one of its consumer slots
     fn disconnect_consumer(&self, consumer: &mut Recipient<ConsumerMessage>, slot_id: String) {
         let _ = consumer.do_send(ConsumerMessage::Disconnect { slot_id });
     }
 
+    /// Look up all consumers for a given producer and tell them to disconnect
+    /// the associated slots
     fn disconnect_consumers(
         &mut self,
         video_producer: StreamProducer,
@@ -303,6 +370,7 @@ impl NodeManager {
         }
     }
 
+    /// Dispatch a [`Source`] command
     #[instrument(level = "trace", name = "source-command", skip(self))]
     fn send_source_command_future(
         &mut self,
@@ -322,18 +390,22 @@ impl NodeManager {
             }
         };
 
-        Box::pin({
-            async move { source.send(SourceCommandMessage { command }).await }
-                .into_actor(self)
-                .then(move |res, _slf, _ctx| {
-                    actix::fut::ready(match res {
-                        Ok(res) => res.map(|_| None),
-                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+        Box::pin(
+            {
+                async move { source.send(SourceCommandMessage { command }).await }
+                    .into_actor(self)
+                    .then(move |res, _slf, _ctx| {
+                        actix::fut::ready(match res {
+                            Ok(res) => res.map(|_| None),
+                            Err(err) => Err(anyhow!("Internal server error {}", err)),
+                        })
                     })
-                })
-        }.in_current_actor_span())
+            }
+            .in_current_actor_span(),
+        )
     }
 
+    /// Dispatch a [`Destination`] command
     #[instrument(level = "trace", name = "destination-command", skip(self))]
     fn send_destination_command_future(
         &mut self,
@@ -356,18 +428,22 @@ impl NodeManager {
             }
         };
 
-        Box::pin({
-            async move { dest.send(DestinationCommandMessage { command }).await }
-                .into_actor(self)
-                .then(move |res, _slf, _ctx| {
-                    actix::fut::ready(match res {
-                        Ok(res) => res.map(|_| None),
-                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+        Box::pin(
+            {
+                async move { dest.send(DestinationCommandMessage { command }).await }
+                    .into_actor(self)
+                    .then(move |res, _slf, _ctx| {
+                        actix::fut::ready(match res {
+                            Ok(res) => res.map(|_| None),
+                            Err(err) => Err(anyhow!("Internal server error {}", err)),
+                        })
                     })
-                })
-        }.in_current_actor_span())
+            }
+            .in_current_actor_span(),
+        )
     }
 
+    /// Dispatch a [`Mixer`] command
     #[instrument(level = "trace", name = "mixer-command", skip(self))]
     fn send_mixer_command_future(
         &mut self,
@@ -387,18 +463,22 @@ impl NodeManager {
             }
         };
 
-        Box::pin({
-            async move { mixer.send(MixerCommandMessage { command }).await }
-                .into_actor(self)
-                .then(move |res, _slf, _ctx| {
-                    actix::fut::ready(match res {
-                        Ok(res) => res.map(|_| None),
-                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+        Box::pin(
+            {
+                async move { mixer.send(MixerCommandMessage { command }).await }
+                    .into_actor(self)
+                    .then(move |res, _slf, _ctx| {
+                        actix::fut::ready(match res {
+                            Ok(res) => res.map(|_| None),
+                            Err(err) => Err(anyhow!("Internal server error {}", err)),
+                        })
                     })
-                })
-        }.in_current_actor_span())
+            }
+            .in_current_actor_span(),
+        )
     }
 
+    /// Reschedule a [`Node`]
     #[instrument(level = "trace", name = "schedule-command", skip(self))]
     fn send_schedule_command_future(
         &mut self,
@@ -408,16 +488,20 @@ impl NodeManager {
     ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
         if let Some(node) = self.nodes.get(id) {
             let mut node = node.clone();
-            Box::pin({
-                async move { node.schedule(ScheduleMessage { cue_time, end_time }).await }
-                    .into_actor(self)
-                    .then(move |res, _slf, _ctx| actix::fut::ready(res.map(|_| None)))
-            }.in_current_actor_span())
+            Box::pin(
+                {
+                    async move { node.schedule(ScheduleMessage { cue_time, end_time }).await }
+                        .into_actor(self)
+                        .then(move |res, _slf, _ctx| actix::fut::ready(res.map(|_| None)))
+                }
+                .in_current_actor_span(),
+            )
         } else {
             Box::pin(actix::fut::ready(Err(anyhow!("No node with id {}", id))))
         }
     }
 
+    /// Connect a producer and a consumer
     #[instrument(level = "trace", name = "connect-command", skip(self))]
     fn connect_future(
         &mut self,
@@ -448,46 +532,50 @@ impl NodeManager {
         let consumer_clone = consumer.clone();
         let link_id_clone = link_id.clone();
 
-        Box::pin({
-            async move { producer.send(GetProducerMessage {}).in_current_span().await }
-                .then(move |res| async move {
-                    let res = res.unwrap();
+        Box::pin(
+            {
+                async move { producer.send(GetProducerMessage {}).in_current_span().await }
+                    .then(move |res| async move {
+                        let res = res.unwrap();
 
-                    let (video_producer, audio_producer) = match res {
-                        Ok(res) => res,
-                        Err(err) => {
-                            return Ok(Err(anyhow!("Failed to get producer: {:?}", err)));
-                        }
-                    };
-
-                    consumer
-                        .send(ConsumerMessage::Connect {
-                            link_id,
-                            video_producer,
-                            audio_producer,
-                        })
-                        .in_current_span()
-                        .await
-                })
-                .into_actor(self)
-                .then(move |res, slf, _ctx| {
-                    actix::fut::ready(match res {
-                        Ok(res) => {
-                            if res.is_ok() {
-                                debug!("Link established");
-                                slf.links.insert(link_id_clone, consumer_clone);
-                            } else {
-                                warn!("Failed to establish link");
+                        let (video_producer, audio_producer) = match res {
+                            Ok(res) => res,
+                            Err(err) => {
+                                return Ok(Err(anyhow!("Failed to get producer: {:?}", err)));
                             }
+                        };
 
-                            res.map(|_| None)
-                        }
-                        Err(err) => Err(anyhow!("Internal server error {}", err)),
+                        consumer
+                            .send(ConsumerMessage::Connect {
+                                link_id,
+                                video_producer,
+                                audio_producer,
+                            })
+                            .in_current_span()
+                            .await
                     })
-                })
-        }.in_current_actor_span())
+                    .into_actor(self)
+                    .then(move |res, slf, _ctx| {
+                        actix::fut::ready(match res {
+                            Ok(res) => {
+                                if res.is_ok() {
+                                    debug!("Link established");
+                                    slf.links.insert(link_id_clone, consumer_clone);
+                                } else {
+                                    warn!("Failed to establish link");
+                                }
+
+                                res.map(|_| None)
+                            }
+                            Err(err) => Err(anyhow!("Internal server error {}", err)),
+                        })
+                    })
+            }
+            .in_current_actor_span(),
+        )
     }
 
+    /// Disconnect a consumer by id
     #[instrument(level = "trace", name = "disconnect-command", skip(self))]
     fn disconnect(&mut self, link_id: &str) -> Result<(), Error> {
         if let Some(mut consumer) = self.links.remove(link_id) {
@@ -498,6 +586,7 @@ impl NodeManager {
         }
     }
 
+    /// Get the status either of a specific [`Node`], or of all nodes
     #[instrument(level = "trace", name = "status-command", skip(self))]
     fn get_status_future(
         &mut self,
@@ -518,24 +607,27 @@ impl NodeManager {
                 .collect(),
         };
 
-        Box::pin({
-            async move {
-                let all_futures = nodes.drain(..).map(|(node_id, mut node)| async move {
-                    node.get_info().await.map(|res| (node_id, res))
-                });
-                futures::future::join_all(all_futures).await
+        Box::pin(
+            {
+                async move {
+                    let all_futures = nodes.drain(..).map(|(node_id, mut node)| async move {
+                        node.get_info().await.map(|res| (node_id, res))
+                    });
+                    futures::future::join_all(all_futures).await
+                }
+                .into_actor(self)
+                .then(move |mut res, _slf, _ctx| {
+                    actix::fut::ready(Ok(Some(Status {
+                        nodes: res
+                            .drain(..)
+                            .filter(|res| res.is_ok())
+                            .map(|res| res.unwrap())
+                            .collect(),
+                    })))
+                })
             }
-            .into_actor(self)
-            .then(move |mut res, _slf, _ctx| {
-                actix::fut::ready(Ok(Some(Status {
-                    nodes: res
-                        .drain(..)
-                        .filter(|res| res.is_ok())
-                        .map(|res| res.unwrap())
-                        .collect(),
-                })))
-            })
-        }.in_current_actor_span())
+            .in_current_actor_span(),
+        )
     }
 }
 
