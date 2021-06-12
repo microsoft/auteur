@@ -3,7 +3,7 @@
 //! The actual destination depends on its family, for example RTMP or LocalFile
 //! are supported.
 //!
-//! Destinations spend time in the [`stopping state`](NodeStatus::Stopping)
+//! Destinations spend time in the [`stopping state`](State::Stopping)
 //! during which EOS will be propagated down their pipeline before actually
 //! stopping.
 
@@ -14,7 +14,7 @@ use gst::prelude::*;
 use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{
-    DestinationFamily, DestinationInfo, NodeInfo, NodeStatus,
+    DestinationFamily, DestinationInfo, NodeInfo, State,
 };
 
 use crate::node::{
@@ -46,8 +46,8 @@ pub struct Destination {
     cue_time: Option<DateTime<Utc>>,
     /// When the destination will stop
     end_time: Option<DateTime<Utc>>,
-    /// The status of the destination
-    status: NodeStatus,
+    /// The state of the destination
+    state: State,
     /// The wrapped pipeline
     pipeline: gst::Pipeline,
     /// A helper for managing the pipeline
@@ -82,7 +82,7 @@ impl Actor for Destination {
     #[instrument(level = "debug", name = "stopping", skip(self, ctx), fields(id = %self.id))]
     fn stopping(&mut self, ctx: &mut Self::Context) -> Running {
         if self.wait_for_eos(ctx) {
-            self.status = NodeStatus::Stopping;
+            self.state = State::Stopping;
             Running::Continue
         } else {
             debug!("no need to wait for EOS");
@@ -136,7 +136,7 @@ impl Destination {
             family: family.clone(),
             cue_time: None,
             end_time: None,
-            status: NodeStatus::Initial,
+            state: State::Initial,
             pipeline,
             pipeline_manager: None,
             video_appsrc,
@@ -267,7 +267,7 @@ impl Destination {
             },
         ));
 
-        self.status = NodeStatus::Started;
+        self.state = State::Started;
 
         let addr = ctx.address().clone();
         let id = self.id.clone();
@@ -350,7 +350,7 @@ impl Destination {
             debug!("started but not yet connected");
         }
 
-        self.status = NodeStatus::Started;
+        self.state = State::Started;
 
         let addr = ctx.address().clone();
         let id = self.id.clone();
@@ -374,12 +374,12 @@ impl Destination {
             ctx.cancel_future(handle);
         }
 
-        let next_time = match self.status {
-            NodeStatus::Initial => self.cue_time,
-            NodeStatus::Starting => unreachable!(),
-            NodeStatus::Started => self.end_time,
-            NodeStatus::Stopping => None,
-            NodeStatus::Stopped => None,
+        let next_time = match self.state {
+            State::Initial => self.cue_time,
+            State::Starting => unreachable!(),
+            State::Started => self.end_time,
+            State::Stopping => None,
+            State::Stopped => None,
         };
 
         if let Some(next_time) = next_time {
@@ -395,21 +395,21 @@ impl Destination {
                 }));
             } else {
                 trace!("progressing to next state");
-                if let Err(err) = match self.status {
-                    NodeStatus::Initial => match self.family.clone() {
+                if let Err(err) = match self.state {
+                    State::Initial => match self.family.clone() {
                         DestinationFamily::RTMP { uri } => self.start_rtmp_pipeline(ctx, &uri),
                         DestinationFamily::LocalFile {
                             base_name,
                             max_size_time,
                         } => self.start_local_file_pipeline(ctx, &base_name, max_size_time),
                     },
-                    NodeStatus::Starting => unreachable!(),
-                    NodeStatus::Started => {
+                    State::Starting => unreachable!(),
+                    State::Started => {
                         ctx.stop();
-                        self.status = NodeStatus::Stopping;
+                        self.state = State::Stopping;
                         Ok(())
                     }
-                    NodeStatus::Stopping | NodeStatus::Stopped => Ok(()),
+                    State::Stopping | State::Stopped => Ok(()),
                 } {
                     ctx.notify(ErrorMessage(format!(
                         "Failed to advance destination state: {:?}",
@@ -440,8 +440,8 @@ impl Destination {
             }
         }
 
-        match self.status {
-            NodeStatus::Initial => {
+        match self.state {
+            State::Initial => {
                 self.cue_time = Some(cue_time);
                 self.end_time = end_time;
 
@@ -449,8 +449,8 @@ impl Destination {
             }
             _ => {
                 return Err(anyhow!(
-                    "can't start destination with status {:?}",
-                    self.status
+                    "can't start destination with state {:?}",
+                    self.state
                 ));
             }
         }
@@ -470,7 +470,7 @@ impl Destination {
             return Err(anyhow!("destination already has a producer"));
         }
 
-        if self.status == NodeStatus::Started {
+        if self.state == State::Started {
             debug!("destination {} connecting to producers", self.id);
             video_producer.add_consumer(&self.video_appsrc, &link_id);
             audio_producer.add_consumer(&self.audio_appsrc, &link_id);
@@ -511,17 +511,17 @@ impl Destination {
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
-        match self.status {
-            NodeStatus::Initial => Ok(()),
-            NodeStatus::Starting => unreachable!(),
-            NodeStatus::Started => {
+        match self.state {
+            State::Initial => Ok(()),
+            State::Starting => unreachable!(),
+            State::Started => {
                 if cue_time.is_some() {
                     Err(anyhow!("can't change cue time when streaming"))
                 } else {
                     Ok(())
                 }
             }
-            NodeStatus::Stopping | NodeStatus::Stopped => {
+            State::Stopping | State::Stopped => {
                 Err(anyhow!("can't reschedule when stopping or stopped"))
             }
         }?;
@@ -537,9 +537,9 @@ impl Destination {
     // Returns true if calling code should wait before fully stopping
     #[instrument(level = "debug", name = "checking if waiting for EOS is needed", skip(self, ctx), fields(id = %self.id))]
     fn wait_for_eos(&mut self, ctx: &mut Context<Self>) -> bool {
-        match self.status {
-            NodeStatus::Initial | NodeStatus::Stopped => false,
-            NodeStatus::Starting => unreachable!(),
+        match self.state {
+            State::Initial | State::Stopped => false,
+            State::Starting => unreachable!(),
             _ => match self.consumer_slot.take() {
                 Some(slot) => {
                     let pipeline_manager = self.pipeline_manager.as_ref().unwrap();
@@ -559,7 +559,7 @@ impl Destination {
                             let span = tracing::debug_span!("stopping", id = %slf.id);
                             let _guard = span.enter();
                             debug!("waited for EOS");
-                            slf.status = NodeStatus::Stopped;
+                            slf.state = State::Stopped;
                             ctx.stop();
                             actix::fut::ready(())
                         });
@@ -651,7 +651,7 @@ impl Handler<GetNodeInfoMessage> for Destination {
             slot_id: self.consumer_slot.as_ref().map(|slot| slot.id.clone()),
             cue_time: self.cue_time,
             end_time: self.end_time,
-            status: self.status,
+            state: self.state,
         }))
     }
 }

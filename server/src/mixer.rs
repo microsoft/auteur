@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{
-    MixerCommand, MixerConfig, MixerInfo, MixerSlotInfo, NodeInfo, NodeStatus,
+    MixerCommand, MixerConfig, MixerInfo, MixerSlotInfo, NodeInfo, State,
 };
 
 use crate::node::{
@@ -63,8 +63,8 @@ pub struct Mixer {
     cue_time: Option<DateTime<Utc>>,
     /// When the mixer will stop
     end_time: Option<DateTime<Utc>>,
-    /// The status of the mixer
-    status: NodeStatus,
+    /// The state of the mixer
+    state: State,
     /// The wrapped pipeline
     pipeline: gst::Pipeline,
     /// A helper for managing the pipeline
@@ -156,7 +156,7 @@ impl Mixer {
             id: id.to_string(),
             cue_time: None,
             end_time: None,
-            status: NodeStatus::Initial,
+            state: State::Initial,
             pipeline,
             pipeline_manager: None,
             audio_producer: StreamProducer::from(&audio_appsink),
@@ -516,7 +516,7 @@ impl Mixer {
             self.audio_producer.appsink().upcast_ref(),
         ])?;
 
-        self.status = NodeStatus::Started;
+        self.state = State::Started;
 
         for (id, slot) in self.consumer_slots.iter_mut() {
             Mixer::connect_slot(
@@ -681,12 +681,12 @@ impl Mixer {
             ctx.cancel_future(handle);
         }
 
-        let next_time = match self.status {
-            NodeStatus::Initial => self.cue_time,
-            NodeStatus::Starting => unreachable!(),
-            NodeStatus::Started => self.end_time,
-            NodeStatus::Stopping => unreachable!(),
-            NodeStatus::Stopped => None,
+        let next_time = match self.state {
+            State::Initial => self.cue_time,
+            State::Starting => unreachable!(),
+            State::Started => self.end_time,
+            State::Stopping => unreachable!(),
+            State::Stopped => None,
         };
 
         if let Some(next_time) = next_time {
@@ -702,19 +702,19 @@ impl Mixer {
                 }));
             } else {
                 trace!("progressing to next state");
-                if let Err(err) = match self.status {
-                    NodeStatus::Initial => self.start_pipeline(ctx),
-                    NodeStatus::Starting => unreachable!(),
-                    NodeStatus::Started => {
+                if let Err(err) = match self.state {
+                    State::Initial => self.start_pipeline(ctx),
+                    State::Starting => unreachable!(),
+                    State::Started => {
                         ctx.stop();
-                        self.status = NodeStatus::Stopped;
+                        self.state = State::Stopped;
                         Ok(())
                     }
-                    NodeStatus::Stopping => unreachable!(),
-                    NodeStatus::Stopped => Ok(()),
+                    State::Stopping => unreachable!(),
+                    State::Stopped => Ok(()),
                 } {
                     ctx.notify(ErrorMessage(format!(
-                        "Failed to change mixer status: {:?}",
+                        "Failed to change mixer state: {:?}",
                         err
                     )));
                 } else {
@@ -742,16 +742,16 @@ impl Mixer {
             }
         }
 
-        match self.status {
-            NodeStatus::Initial => {
+        match self.state {
+            State::Initial => {
                 self.cue_time = Some(cue_time);
                 self.end_time = end_time;
 
                 self.schedule_state(ctx);
             }
-            NodeStatus::Starting | NodeStatus::Stopping => unreachable!(),
+            State::Starting | State::Stopping => unreachable!(),
             _ => {
-                return Err(anyhow!("can't start mixer with status {:?}", self.status));
+                return Err(anyhow!("can't start mixer with state {:?}", self.state));
             }
         }
 
@@ -802,7 +802,7 @@ impl Mixer {
             video_capsfilter: None,
         };
 
-        if self.status == NodeStatus::Started {
+        if self.state == State::Started {
             let vmixer = self.video_mixer.clone().unwrap();
             let amixer = self.audio_mixer.clone().unwrap();
 
@@ -869,18 +869,18 @@ impl Mixer {
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
-        match self.status {
-            NodeStatus::Initial => Ok(()),
-            NodeStatus::Starting => unreachable!(),
-            NodeStatus::Started => {
+        match self.state {
+            State::Initial => Ok(()),
+            State::Starting => unreachable!(),
+            State::Started => {
                 if cue_time.is_some() {
                     Err(anyhow!("can't change cue time when mixing"))
                 } else {
                     Ok(())
                 }
             }
-            NodeStatus::Stopping => unreachable!(),
-            NodeStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
+            State::Stopping => unreachable!(),
+            State::Stopped => Err(anyhow!("can't reschedule when stopped")),
         }?;
 
         update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
@@ -998,7 +998,7 @@ impl Handler<GetNodeInfoMessage> for Mixer {
             consumer_slot_ids: self.video_producer.get_consumer_ids(),
             cue_time: self.cue_time,
             end_time: self.end_time,
-            status: self.status,
+            state: self.state,
         }))
     }
 }

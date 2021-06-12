@@ -3,7 +3,7 @@
 //! The only supported source type is created with a URI. In the future
 //! generators could also be supported, for example to display a countdown.
 //!
-//! The main complexity for this node is the [`starting`](NodeStatus::Starting)
+//! The main complexity for this node is the [`starting`](State::Starting)
 //! feature: when the node is scheduled to play in the future, we spin it
 //! up 10 seconds before its cue time. Non-live sources are blocked
 //! by fallbacksrc, which only picks a base time once unblocked,
@@ -29,14 +29,14 @@ use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use rtmp_switcher_controlling::controller::{NodeInfo, NodeStatus, SourceInfo};
+use rtmp_switcher_controlling::controller::{NodeInfo, State, SourceInfo};
 use tracing::{debug, error, instrument, trace};
 
 /// The pipeline and various GStreamer elements that the source
 /// optionally wraps, their lifetime is not directly bound to that
 /// of the source itself
 #[derive(Debug)]
-struct State {
+struct Media {
     /// The wrapped pipeline
     pipeline: gst::Pipeline,
     /// A helper for managing the pipeline
@@ -67,10 +67,10 @@ pub struct Source {
     audio_producer: StreamProducer,
     /// Output video producer
     video_producer: StreamProducer,
-    /// The status of the source
-    status: NodeStatus,
+    /// The state of the source
+    state: State,
     /// GStreamer elements when prerolling or playing
-    state: Option<State>,
+    media: Option<Media>,
     /// Scheduling timer
     state_handle: Option<SpawnHandle>,
     /// Statistics timer
@@ -100,8 +100,8 @@ impl Source {
             end_time: None,
             audio_producer: StreamProducer::from(&audio_appsink),
             video_producer: StreamProducer::from(&video_appsink),
-            status: NodeStatus::Initial,
-            state: None,
+            state: State::Initial,
+            media: None,
             state_handle: None,
             monitor_handle: None,
         }
@@ -158,8 +158,8 @@ impl Source {
     /// Preroll the pipeline ahead of time (by default 10 seconds before cue time)
     #[instrument(level = "debug", name = "prerolling", skip(self, ctx), fields(id = %self.id))]
     fn preroll(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        if self.status != NodeStatus::Initial {
-            return Err(anyhow!("can't preroll source in state: {:?}", self.status));
+        if self.state != State::Initial {
+            return Err(anyhow!("can't preroll source in state: {:?}", self.state));
         }
 
         let pipeline = gst::Pipeline::new(Some(&self.id.to_string()));
@@ -244,8 +244,8 @@ impl Source {
 
         debug!("now prerolling");
 
-        self.status = NodeStatus::Starting;
-        self.state = Some(State {
+        self.state = State::Starting;
+        self.media = Some(Media {
             pipeline: pipeline.clone(),
             pipeline_manager: PipelineManager::new(
                 pipeline.clone(),
@@ -276,13 +276,13 @@ impl Source {
     /// Unblock a prerolling pipeline
     #[instrument(level = "debug", name = "unblocking", skip(self), fields(id = %self.id))]
     fn unblock(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        if self.status != NodeStatus::Starting {
-            return Err(anyhow!("can't play source in state: {:?}", self.status));
+        if self.state != State::Starting {
+            return Err(anyhow!("can't play source in state: {:?}", self.state));
         }
 
-        let state = self.state.as_ref().unwrap();
+        let media = self.media.as_ref().unwrap();
 
-        state.src.emit_by_name("unblock", &[]).unwrap();
+        media.src.emit_by_name("unblock", &[]).unwrap();
         self.video_producer.forward();
         self.audio_producer.forward();
 
@@ -292,8 +292,8 @@ impl Source {
         self.monitor_handle = Some(ctx.run_interval(
             std::time::Duration::from_secs(1),
             move |s, _ctx| {
-                if let Some(ref state) = s.state {
-                    if let Some(ref source_bin) = state.source_bin {
+                if let Some(ref media) = s.media {
+                    if let Some(ref source_bin) = media.source_bin {
                         let val = source_bin.property("statistics").unwrap();
                         let s = val.get::<gst::Structure>().unwrap();
 
@@ -303,7 +303,7 @@ impl Source {
             },
         ));
 
-        self.status = NodeStatus::Started;
+        self.state = State::Started;
 
         Ok(())
     }
@@ -316,18 +316,18 @@ impl Source {
             ctx.cancel_future(handle);
         }
 
-        let next_time = match self.status {
-            NodeStatus::Initial => {
+        let next_time = match self.state {
+            State::Initial => {
                 if let Some(cue_time) = self.cue_time {
                     Some(cue_time - chrono::Duration::seconds(10))
                 } else {
                     None
                 }
             }
-            NodeStatus::Starting => self.cue_time,
-            NodeStatus::Started => self.end_time,
-            NodeStatus::Stopping => unreachable!(),
-            NodeStatus::Stopped => None,
+            State::Starting => self.cue_time,
+            State::Started => self.end_time,
+            State::Stopping => unreachable!(),
+            State::Stopped => None,
         };
 
         if let Some(next_time) = next_time {
@@ -343,16 +343,16 @@ impl Source {
                 }));
             } else {
                 trace!("progressing to next state");
-                if let Err(err) = match self.status {
-                    NodeStatus::Initial => self.preroll(ctx),
-                    NodeStatus::Starting => self.unblock(ctx),
-                    NodeStatus::Started => {
+                if let Err(err) = match self.state {
+                    State::Initial => self.preroll(ctx),
+                    State::Starting => self.unblock(ctx),
+                    State::Started => {
                         ctx.stop();
-                        self.status = NodeStatus::Stopped;
+                        self.state = State::Stopped;
                         Ok(())
                     }
-                    NodeStatus::Stopping => unreachable!(),
-                    NodeStatus::Stopped => Ok(()),
+                    State::Stopping => unreachable!(),
+                    State::Stopped => Ok(()),
                 } {
                     ctx.notify(ErrorMessage(format!("Failed to preroll source: {:?}", err)));
                 } else {
@@ -380,15 +380,15 @@ impl Source {
             }
         }
 
-        match self.status {
-            NodeStatus::Initial => {
+        match self.state {
+            State::Initial => {
                 self.cue_time = Some(cue_time);
                 self.end_time = end_time;
 
                 self.schedule_state(ctx);
             }
             _ => {
-                return Err(anyhow!("can't play source with status {:?}", self.status));
+                return Err(anyhow!("can't play source with state {:?}", self.state));
             }
         }
 
@@ -397,17 +397,17 @@ impl Source {
 
     /// A new pad was added, or an existing pad EOS'd
     fn handle_stream_change(&mut self, ctx: &mut Context<Self>, starting: bool) {
-        if let Some(ref mut state) = self.state {
+        if let Some(ref mut media) = self.media {
             if starting {
-                state.n_streams += 1;
+                media.n_streams += 1;
 
-                debug!(id = %self.id, n_streams = %state.n_streams, "new active stream");
+                debug!(id = %self.id, n_streams = %media.n_streams, "new active stream");
             } else {
-                state.n_streams -= 1;
+                media.n_streams -= 1;
 
-                debug!(id = %self.id, n_streams = %state.n_streams, "active stream finished");
+                debug!(id = %self.id, n_streams = %media.n_streams, "active stream finished");
 
-                if state.n_streams == 0 {
+                if media.n_streams == 0 {
                     ctx.stop()
                 }
             }
@@ -417,7 +417,7 @@ impl Source {
     /// Track the status of a new fallbackswitch
     #[instrument(level = "debug", name = "new-fallbackswitch", skip(self, ctx), fields(id = %self.id))]
     fn monitor_switch(&mut self, ctx: &mut Context<Self>, switch: gst::Element) {
-        if let Some(ref mut state) = self.state {
+        if let Some(ref mut media) = self.media {
             let addr_clone = ctx.address().clone();
             switch
                 .connect("notify::primary-health", false, move |_args| {
@@ -434,23 +434,23 @@ impl Source {
                 })
                 .unwrap();
 
-            state.switches.push(switch);
+            media.switches.push(switch);
         }
     }
 
     /// Trace the status of the source for monitoring purposes
     #[instrument(level = "trace", name = "new-source-status", skip(self), fields(id = %self.id))]
     fn log_source_status(&mut self) {
-        if let Some(ref state) = self.state {
-            let value = state.src.property("status").unwrap();
+        if let Some(ref media) = self.media {
+            let value = media.src.property("status").unwrap();
             let status = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
             trace!("Source status: {}", status.nick());
             trace!(
                 "Source statistics: {:?}",
-                state.src.property("statistics").unwrap()
+                media.src.property("statistics").unwrap()
             );
 
-            for switch in &state.switches {
+            for switch in &media.switches {
                 let switch_name = match switch.static_pad("src").unwrap().caps() {
                     Some(caps) => match caps.structure(0) {
                         Some(s) => s.name(),
@@ -478,38 +478,38 @@ impl Source {
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
-        match self.status {
-            NodeStatus::Initial => Ok(()),
-            NodeStatus::Starting => Ok(()),
-            NodeStatus::Started => {
+        match self.state {
+            State::Initial => Ok(()),
+            State::Starting => Ok(()),
+            State::Started => {
                 if cue_time.is_some() {
                     Err(anyhow!("can't change cue time when playing"))
                 } else {
                     Ok(())
                 }
             }
-            NodeStatus::Stopping => unreachable!(),
-            NodeStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
+            State::Stopping => unreachable!(),
+            State::Stopped => Err(anyhow!("can't reschedule when stopped")),
         }?;
 
         update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
 
         if cue_time.is_some() {
-            if let Some(state) = self.state.take() {
+            if let Some(media) = self.media.take() {
                 debug!("tearing down previously prerolling pipeline");
-                let _ = state.pipeline.set_state(gst::State::Null);
+                let _ = media.pipeline.set_state(gst::State::Null);
 
                 let audio_appsink: &gst::Element = self.audio_producer.appsink().upcast_ref();
                 let video_appsink: &gst::Element = self.video_producer.appsink().upcast_ref();
 
-                state
+                media
                     .pipeline
                     .remove_many(&[audio_appsink, video_appsink])
                     .unwrap();
 
-                let _ = state.pipeline_manager.do_send(StopManagerMessage);
+                let _ = media.pipeline_manager.do_send(StopManagerMessage);
             }
-            self.status = NodeStatus::Initial;
+            self.state = State::Initial;
         }
 
         self.schedule_state(ctx);
@@ -526,8 +526,8 @@ impl Actor for Source {
 
     #[instrument(level = "debug", name = "stopping", skip(self, _ctx), fields(id = %self.id))]
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        if let Some(state) = self.state.take() {
-            let _ = state.pipeline_manager.do_send(StopManagerMessage);
+        if let Some(media) = self.media.take() {
+            let _ = media.pipeline_manager.do_send(StopManagerMessage);
         }
 
         NodeManager::from_registry().do_send(StoppedMessage {
@@ -590,9 +590,9 @@ impl Handler<ErrorMessage> for Source {
     fn handle(&mut self, msg: ErrorMessage, ctx: &mut Context<Self>) -> Self::Result {
         error!("Got error message '{}' on source {}", msg.0, self.id,);
 
-        if let Some(state) = &self.state {
+        if let Some(media) = &self.media {
             gst::debug_bin_to_dot_file_with_ts(
-                &state.pipeline,
+                &media.pipeline,
                 gst::DebugGraphDetails::all(),
                 format!("error-source-{}", self.id),
             );
@@ -632,8 +632,8 @@ impl Handler<NewSourceBinMessage> for Source {
     type Result = ();
 
     fn handle(&mut self, msg: NewSourceBinMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        if let Some(ref mut state) = self.state {
-            state.source_bin = Some(msg.0);
+        if let Some(ref mut media) = self.media {
+            media.source_bin = Some(msg.0);
         }
     }
 }
@@ -681,7 +681,7 @@ impl Handler<GetNodeInfoMessage> for Source {
             consumer_slot_ids: self.video_producer.get_consumer_ids(),
             cue_time: self.cue_time,
             end_time: self.end_time,
-            status: self.status,
+            state: self.state,
         }))
     }
 }

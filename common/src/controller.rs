@@ -168,10 +168,10 @@ pub struct ControllerMessage {
     pub command: Command,
 }
 
-/// The status of a node
+/// The state of a node
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum NodeStatus {
+pub enum State {
     /// The node is not running yet
     Initial,
     /// The node is preparing
@@ -217,8 +217,8 @@ pub struct SourceInfo {
     pub cue_time: Option<DateTime<Utc>>,
     /// When the source was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
-    /// The status of the source
-    pub status: NodeStatus,
+    /// The state of the source
+    pub state: State,
 }
 
 /// Destination-specific information
@@ -233,8 +233,8 @@ pub struct DestinationInfo {
     pub cue_time: Option<DateTime<Utc>>,
     /// When the destination was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
-    /// The status of the destination
-    pub status: NodeStatus,
+    /// The state of the destination
+    pub state: State,
 }
 
 /// Mixer-slot-specific information
@@ -263,8 +263,8 @@ pub struct MixerInfo {
     pub cue_time: Option<DateTime<Utc>>,
     /// When the mixer was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
-    /// The status of the mixer
-    pub status: NodeStatus,
+    /// The state of the mixer
+    pub state: State,
 }
 
 /// Info variants
