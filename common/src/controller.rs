@@ -182,43 +182,19 @@ pub struct ControllerMessage {
     pub command: Command,
 }
 
-/// The status of a source
+/// The status of a node
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum SourceStatus {
-    /// The source is not running yet
+pub enum NodeStatus {
+    /// The node is not running yet
     Initial,
-    /// The source has started prerolling
-    Prerolling,
-    /// The source is playing
-    Playing,
-    /// The source has stopped
-    Stopped,
-}
-
-/// The status of a destination
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DestinationStatus {
-    /// The destination is not running yet
-    Initial,
-    /// The destination is streaming
-    Streaming,
-    /// The destination is stopping and waiting for EOS to propagate
+    /// The node is preparing
+    Starting,
+    /// The node is playing
+    Started,
+    /// The node is stopping
     Stopping,
-    /// The destination has stopped
-    Stopped,
-}
-
-/// The status of a mixer
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MixerStatus {
-    /// The mixer hasn't started mixing yet
-    Initial,
-    /// The mixer is mixing
-    Mixing,
-    /// The mixer has stopped
+    /// The node has stopped
     Stopped,
 }
 
@@ -256,7 +232,7 @@ pub struct SourceInfo {
     /// When the source was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
     /// The status of the source
-    pub status: SourceStatus,
+    pub status: NodeStatus,
 }
 
 /// Destination-specific information
@@ -272,7 +248,7 @@ pub struct DestinationInfo {
     /// When the destination was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
     /// The status of the destination
-    pub status: DestinationStatus,
+    pub status: NodeStatus,
 }
 
 /// Mixer-slot-specific information
@@ -302,7 +278,7 @@ pub struct MixerInfo {
     /// When the mixer was scheduled to end
     pub end_time: Option<DateTime<Utc>>,
     /// The status of the mixer
-    pub status: MixerStatus,
+    pub status: NodeStatus,
 }
 
 /// Info variants

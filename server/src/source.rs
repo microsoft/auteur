@@ -3,7 +3,7 @@
 //! The only supported source type is created with a URI. In the future
 //! generators could also be supported, for example to display a countdown.
 //!
-//! The main complexity for this node is the [`prerolling`](SourceStatus::Prerolling)
+//! The main complexity for this node is the [`starting`](NodeStatus::Starting)
 //! feature: when the node is scheduled to play in the future, we spin it
 //! up 10 seconds before its cue time. Non-live sources are blocked
 //! by fallbacksrc, which only picks a base time once unblocked,
@@ -29,7 +29,7 @@ use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use rtmp_switcher_controlling::controller::{NodeInfo, SourceCommand, SourceInfo, SourceStatus};
+use rtmp_switcher_controlling::controller::{NodeInfo, NodeStatus, SourceCommand, SourceInfo};
 use tracing::{debug, error, instrument, trace};
 
 /// The pipeline and various GStreamer elements that the source
@@ -68,7 +68,7 @@ pub struct Source {
     /// Output video producer
     video_producer: StreamProducer,
     /// The status of the source
-    status: SourceStatus,
+    status: NodeStatus,
     /// GStreamer elements when prerolling or playing
     state: Option<State>,
     /// Scheduling timer
@@ -79,6 +79,7 @@ pub struct Source {
 
 impl Source {
     /// Create a source
+    #[instrument(level = "debug", name = "creating")]
     pub fn new(id: &str, uri: &str) -> Self {
         let audio_appsink =
             gst::ElementFactory::make("appsink", Some(&format!("src-audio-appsink-{}", id)))
@@ -99,7 +100,7 @@ impl Source {
             end_time: None,
             audio_producer: StreamProducer::from(&audio_appsink),
             video_producer: StreamProducer::from(&video_appsink),
-            status: SourceStatus::Initial,
+            status: NodeStatus::Initial,
             state: None,
             state_handle: None,
             monitor_handle: None,
@@ -157,7 +158,7 @@ impl Source {
     /// Preroll the pipeline ahead of time (by default 10 seconds before cue time)
     #[instrument(level = "debug", name = "prerolling", skip(self, ctx), fields(id = %self.id))]
     fn preroll(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        if self.status != SourceStatus::Initial {
+        if self.status != NodeStatus::Initial {
             return Err(anyhow!("can't preroll source in state: {:?}", self.status));
         }
 
@@ -243,7 +244,7 @@ impl Source {
 
         debug!("now prerolling");
 
-        self.status = SourceStatus::Prerolling;
+        self.status = NodeStatus::Starting;
         self.state = Some(State {
             pipeline: pipeline.clone(),
             pipeline_manager: PipelineManager::new(
@@ -275,7 +276,7 @@ impl Source {
     /// Unblock a prerolling pipeline
     #[instrument(level = "debug", name = "unblocking", skip(self), fields(id = %self.id))]
     fn unblock(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        if self.status != SourceStatus::Prerolling {
+        if self.status != NodeStatus::Starting {
             return Err(anyhow!("can't play source in state: {:?}", self.status));
         }
 
@@ -302,7 +303,7 @@ impl Source {
             },
         ));
 
-        self.status = SourceStatus::Playing;
+        self.status = NodeStatus::Started;
 
         Ok(())
     }
@@ -316,16 +317,17 @@ impl Source {
         }
 
         let next_time = match self.status {
-            SourceStatus::Initial => {
+            NodeStatus::Initial => {
                 if let Some(cue_time) = self.cue_time {
                     Some(cue_time - chrono::Duration::seconds(10))
                 } else {
                     None
                 }
             }
-            SourceStatus::Prerolling => self.cue_time,
-            SourceStatus::Playing => self.end_time,
-            SourceStatus::Stopped => None,
+            NodeStatus::Starting => self.cue_time,
+            NodeStatus::Started => self.end_time,
+            NodeStatus::Stopping => unreachable!(),
+            NodeStatus::Stopped => None,
         };
 
         if let Some(next_time) = next_time {
@@ -342,14 +344,15 @@ impl Source {
             } else {
                 trace!("progressing to next state");
                 if let Err(err) = match self.status {
-                    SourceStatus::Initial => self.preroll(ctx),
-                    SourceStatus::Prerolling => self.unblock(ctx),
-                    SourceStatus::Playing => {
+                    NodeStatus::Initial => self.preroll(ctx),
+                    NodeStatus::Starting => self.unblock(ctx),
+                    NodeStatus::Started => {
                         ctx.stop();
-                        self.status = SourceStatus::Stopped;
+                        self.status = NodeStatus::Stopped;
                         Ok(())
                     }
-                    SourceStatus::Stopped => Ok(()),
+                    NodeStatus::Stopping => unreachable!(),
+                    NodeStatus::Stopped => Ok(()),
                 } {
                     ctx.notify(ErrorMessage(format!("Failed to preroll source: {:?}", err)));
                 } else {
@@ -378,7 +381,7 @@ impl Source {
         }
 
         match self.status {
-            SourceStatus::Initial => {
+            NodeStatus::Initial => {
                 self.cue_time = Some(cue_time);
                 self.end_time = end_time;
 
@@ -476,16 +479,17 @@ impl Source {
         end_time: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
         match self.status {
-            SourceStatus::Initial => Ok(()),
-            SourceStatus::Prerolling => Ok(()),
-            SourceStatus::Playing => {
+            NodeStatus::Initial => Ok(()),
+            NodeStatus::Starting => Ok(()),
+            NodeStatus::Started => {
                 if cue_time.is_some() {
                     Err(anyhow!("can't change cue time when playing"))
                 } else {
                     Ok(())
                 }
             }
-            SourceStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
+            NodeStatus::Stopping => unreachable!(),
+            NodeStatus::Stopped => Err(anyhow!("can't reschedule when stopped")),
         }?;
 
         update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
@@ -505,7 +509,7 @@ impl Source {
 
                 let _ = state.pipeline_manager.do_send(StopManagerMessage);
             }
-            self.status = SourceStatus::Initial;
+            self.status = NodeStatus::Initial;
         }
 
         self.schedule_state(ctx);
