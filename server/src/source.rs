@@ -20,7 +20,7 @@
 
 use crate::node::{
     GetNodeInfoMessage, GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage,
-    StartMessage, StopMessage,
+    StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -530,10 +530,10 @@ impl Actor for Source {
             let _ = state.pipeline_manager.do_send(StopManagerMessage);
         }
 
-        NodeManager::from_registry().do_send(SourceStoppedMessage {
+        NodeManager::from_registry().do_send(StoppedMessage {
             id: self.id.clone(),
-            video_producer: self.video_producer.clone(),
-            audio_producer: self.audio_producer.clone(),
+            video_producer: Some(self.video_producer.clone()),
+            audio_producer: Some(self.audio_producer.clone()),
         });
     }
 }
@@ -582,19 +582,6 @@ impl Handler<GetProducerMessage> for Source {
             self.audio_producer.clone(),
         )))
     }
-}
-
-/// Sent from [`Source`] to [`NodeManager`] to notify that
-/// it is stopped
-#[derive(Debug)]
-pub struct SourceStoppedMessage {
-    pub id: String,
-    pub video_producer: StreamProducer,
-    pub audio_producer: StreamProducer,
-}
-
-impl Message for SourceStoppedMessage {
-    type Result = ();
 }
 
 impl Handler<ErrorMessage> for Source {

@@ -18,7 +18,7 @@ use rtmp_switcher_controlling::controller::{
 
 use crate::node::{
     ConsumerMessage, GetNodeInfoMessage, GetProducerMessage, MixerCommandMessage, NodeManager,
-    ScheduleMessage, StartMessage, StopMessage,
+    ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -121,10 +121,10 @@ impl Actor for Mixer {
             slot.audio_producer.remove_consumer(&id);
         }
 
-        NodeManager::from_registry().do_send(MixerStoppedMessage {
+        NodeManager::from_registry().do_send(StoppedMessage {
             id: self.id.clone(),
-            video_producer: self.video_producer.clone(),
-            audio_producer: self.video_producer.clone(),
+            video_producer: Some(self.video_producer.clone()),
+            audio_producer: Some(self.video_producer.clone()),
         });
     }
 }
@@ -929,22 +929,6 @@ impl Handler<MixerCommandMessage> for Mixer {
             }
         }
     }
-}
-
-/// Sent from [`Mixer`] to [`NodeManager`] to notify that
-/// it is stopped
-#[derive(Debug)]
-pub struct MixerStoppedMessage {
-    /// Unique identifier
-    pub id: String,
-    /// The output video producer
-    pub video_producer: StreamProducer,
-    /// The output audio producer
-    pub audio_producer: StreamProducer,
-}
-
-impl Message for MixerStoppedMessage {
-    type Result = ();
 }
 
 impl Handler<ErrorMessage> for Mixer {

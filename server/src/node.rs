@@ -6,9 +6,9 @@
 //! Nodes can produce and / or consume data, and are connected to one
 //! another through [`StreamProducer`](crate::utils::StreamProducer)
 
-use crate::destination::{Destination, DestinationStoppedMessage};
-use crate::mixer::{Mixer, MixerStoppedMessage};
-use crate::source::{Source, SourceStoppedMessage};
+use crate::destination::Destination;
+use crate::mixer::Mixer;
+use crate::source::Source;
 use crate::utils::StreamProducer;
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
@@ -189,6 +189,21 @@ pub struct StopMessage;
 
 impl Message for StopMessage {
     type Result = Result<(), Error>;
+}
+
+/// A node has stopped, sent from any node to [`NodeManager`]
+#[derive(Debug)]
+pub struct StoppedMessage {
+    /// Unique identifier of the node
+    pub id: String,
+    /// The output video producer, if any
+    pub video_producer: Option<StreamProducer>,
+    /// The output audio producer, if any
+    pub audio_producer: Option<StreamProducer>,
+}
+
+impl Message for StoppedMessage {
+    type Result = ();
 }
 
 /// Retrieves node-specific information. Sent from [`NodeManager`] to
@@ -382,20 +397,24 @@ impl NodeManager {
     /// the associated slots
     fn disconnect_consumers(
         &mut self,
-        video_producer: StreamProducer,
-        audio_producer: StreamProducer,
+        video_producer: Option<StreamProducer>,
+        audio_producer: Option<StreamProducer>,
     ) {
         debug!("Disconnecting consumers");
 
-        for slot_id in video_producer.get_consumer_ids() {
-            if let Some(mut consumer) = self.links.remove(&slot_id) {
-                self.disconnect_consumer(&mut consumer, slot_id);
+        if let Some(video_producer) = video_producer {
+            for slot_id in video_producer.get_consumer_ids() {
+                if let Some(mut consumer) = self.links.remove(&slot_id) {
+                    self.disconnect_consumer(&mut consumer, slot_id);
+                }
             }
         }
 
-        for slot_id in audio_producer.get_consumer_ids() {
-            if let Some(mut consumer) = self.links.remove(&slot_id) {
-                self.disconnect_consumer(&mut consumer, slot_id);
+        if let Some(audio_producer) = audio_producer {
+            for slot_id in audio_producer.get_consumer_ids() {
+                if let Some(mut consumer) = self.links.remove(&slot_id) {
+                    self.disconnect_consumer(&mut consumer, slot_id);
+                }
             }
         }
     }
@@ -738,43 +757,14 @@ impl Handler<CommandMessage> for NodeManager {
     }
 }
 
-/// Nodes notify us when they're stopped so we can perform
-/// cleanup / orderly disconnection
-impl Handler<SourceStoppedMessage> for NodeManager {
-    type Result = MessageResult<SourceStoppedMessage>;
+impl Handler<StoppedMessage> for NodeManager {
+    type Result = MessageResult<StoppedMessage>;
 
-    #[instrument(level = "debug", name = "removing-source", skip(self, msg, _ctx), fields(id = %msg.id))]
-    fn handle(&mut self, msg: SourceStoppedMessage, _ctx: &mut Context<Self>) -> Self::Result {
+    #[instrument(level = "debug", name = "removing-node", skip(self, _ctx, msg), fields(id = %msg.id))]
+    fn handle(&mut self, msg: StoppedMessage, _ctx: &mut Context<Self>) -> Self::Result {
         self.remove_node(&msg.id);
+        let _ = self.consumers.remove(&msg.id);
         let _ = self.producers.remove(&msg.id);
-
-        self.disconnect_consumers(msg.video_producer, msg.audio_producer);
-
-        MessageResult(())
-    }
-}
-
-impl Handler<DestinationStoppedMessage> for NodeManager {
-    type Result = MessageResult<DestinationStoppedMessage>;
-
-    #[instrument(level = "debug", name = "removing-destination", skip(self, _ctx, msg), fields(id = %msg.id))]
-    fn handle(&mut self, msg: DestinationStoppedMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        self.remove_node(&msg.id);
-        let _ = self.consumers.remove(&msg.id);
-
-        debug!("destination {} removed from NodeManager", msg.id);
-
-        MessageResult(())
-    }
-}
-
-impl Handler<MixerStoppedMessage> for NodeManager {
-    type Result = MessageResult<MixerStoppedMessage>;
-
-    #[instrument(level = "debug", name = "removing-mixer", skip(self, _ctx, msg), fields(id = %msg.id))]
-    fn handle(&mut self, msg: MixerStoppedMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        self.remove_node(&msg.id);
-        let _ = self.consumers.remove(&msg.id);
 
         self.disconnect_consumers(msg.video_producer, msg.audio_producer);
 

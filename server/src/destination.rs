@@ -19,7 +19,7 @@ use rtmp_switcher_controlling::controller::{
 
 use crate::node::{
     ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage, NodeManager, ScheduleMessage,
-    StartMessage, StopMessage,
+    StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -101,8 +101,10 @@ impl Actor for Destination {
             slot.audio_producer.remove_consumer(&slot.id);
         }
 
-        NodeManager::from_registry().do_send(DestinationStoppedMessage {
+        NodeManager::from_registry().do_send(StoppedMessage {
             id: self.id.clone(),
+            video_producer: None,
+            audio_producer: None,
         });
     }
 }
@@ -605,18 +607,6 @@ impl Handler<DestinationCommandMessage> for Destination {
     ) -> Self::Result {
         MessageResult(Ok(()))
     }
-}
-
-/// Sent from [`Destination`] to [`NodeManager`] to notify that
-/// it is stopped
-#[derive(Debug)]
-pub struct DestinationStoppedMessage {
-    /// Unique identifier
-    pub id: String,
-}
-
-impl Message for DestinationStoppedMessage {
-    type Result = ();
 }
 
 impl Handler<ErrorMessage> for Destination {
