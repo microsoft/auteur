@@ -14,12 +14,12 @@ use gst::prelude::*;
 use tracing::{debug, error, instrument, trace};
 
 use rtmp_switcher_controlling::controller::{
-    DestinationCommand, DestinationFamily, DestinationInfo, NodeInfo, NodeStatus,
+    DestinationFamily, DestinationInfo, NodeInfo, NodeStatus,
 };
 
 use crate::node::{
     ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage, NodeManager, ScheduleMessage,
-    StopMessage,
+    StartMessage, StopMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -587,15 +587,23 @@ impl Handler<ConsumerMessage> for Destination {
     }
 }
 
+impl Handler<StartMessage> for Destination {
+    type Result = MessageResult<StartMessage>;
+
+    fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.start(ctx, msg.cue_time, msg.end_time))
+    }
+}
+
 impl Handler<DestinationCommandMessage> for Destination {
     type Result = MessageResult<DestinationCommandMessage>;
 
-    fn handle(&mut self, msg: DestinationCommandMessage, ctx: &mut Context<Self>) -> Self::Result {
-        match msg.command {
-            DestinationCommand::Start { cue_time, end_time } => {
-                MessageResult(self.start(ctx, cue_time, end_time))
-            }
-        }
+    fn handle(
+        &mut self,
+        _msg: DestinationCommandMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        MessageResult(Ok(()))
     }
 }
 

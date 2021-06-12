@@ -10,40 +10,17 @@ use std::collections::HashMap;
 /// Commands to execute on a source
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum SourceCommand {
-    /// Schedule a source for playback, possibly immediately
-    Play {
-        /// When to start playback. Immediate if None
-        cue_time: Option<DateTime<Utc>>,
-        /// When to end playback. Never or on EOS if None
-        end_time: Option<DateTime<Utc>>,
-    },
-}
+pub enum SourceCommand {}
 
 /// Commands to execute on a destination
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum DestinationCommand {
-    /// Schedule a destination for streaming, possibly immediately
-    Start {
-        /// When to start streaming. Immediate if None
-        cue_time: Option<DateTime<Utc>>,
-        /// When to end streaming. Never if None
-        end_time: Option<DateTime<Utc>>,
-    },
-}
+pub enum DestinationCommand {}
 
 /// Commands to execute on a mixer
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MixerCommand {
-    /// Schedule a mixer for .. mixing, possibly immediately
-    Start {
-        /// When to start mixing. Immediate if None
-        cue_time: Option<DateTime<Utc>>,
-        /// When to end mixing. Never if None
-        end_time: Option<DateTime<Utc>>,
-    },
     /// Update the output format of the mixer
     UpdateConfig {
         /// Width of the output picture
@@ -136,6 +113,15 @@ pub enum GraphCommand {
         src_id: String,
         /// Identifier of an existing consumer
         sink_id: String,
+    },
+    /// Schedule any node for starting, possibly immediately
+    Start {
+        /// Unique identifier of the node
+        id: String,
+        /// When to start the node. Immediate if None
+        cue_time: Option<DateTime<Utc>>,
+        /// When to stop the node. Never if None
+        end_time: Option<DateTime<Utc>>,
     },
     /// Reschedule any node
     Reschedule {

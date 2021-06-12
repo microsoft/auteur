@@ -9,8 +9,7 @@ mod controller;
 use controller::Controller;
 
 use rtmp_switcher_controlling::controller::{
-    Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
-    NodeCommand, NodeCommands, SourceCommand,
+    Command, DestinationFamily, GraphCommand, MixerCommand, MixerConfig, NodeCommand, NodeCommands,
 };
 
 #[derive(Clap, Debug)]
@@ -73,6 +72,17 @@ enum NodeSubCommand {
     Disconnect {
         /// The id of the link
         link_id: String,
+    },
+    /// Cue a node for playback
+    Start {
+        /// The id of an existing node
+        id: String,
+        /// When to cue the node, None is immediate
+        #[clap(long)]
+        cue_time: Option<DateTime<Utc>>,
+        /// When to stop the node, None is never
+        #[clap(long)]
+        end_time: Option<DateTime<Utc>>,
     },
     /// Reschedule any node
     Reschedule {
@@ -157,50 +167,15 @@ enum CreateDestinationSubCommand {
 
 /// Source-specific commands
 #[derive(Clap, Debug)]
-enum SourceSubCommand {
-    /// Cue a source for playback
-    Play {
-        /// The id of an existing source
-        id: String,
-        /// When to cue the source, None is immediate
-        #[clap(long)]
-        cue_time: Option<DateTime<Utc>>,
-        /// When to stop the source, None is never
-        #[clap(long)]
-        end_time: Option<DateTime<Utc>>,
-    },
-}
+enum SourceSubCommand {}
 
 /// Destination-specific commands
 #[derive(Clap, Debug)]
-enum DestinationSubCommand {
-    /// Cue a destination for streaming
-    Start {
-        /// The id of an existing destination
-        id: String,
-        /// When to cue the destination, None is immediate
-        #[clap(long)]
-        cue_time: Option<DateTime<Utc>>,
-        /// When to stop the destination, None is never
-        #[clap(long)]
-        end_time: Option<DateTime<Utc>>,
-    },
-}
+enum DestinationSubCommand {}
 
 /// Mixer-specific commands
 #[derive(Clap, Debug)]
 enum MixerSubCommand {
-    /// Cue a mixer for .. mixing
-    Start {
-        /// The id of an existing mixer
-        id: String,
-        /// When to cue the mixer, None is immediate
-        #[clap(long)]
-        cue_time: Option<DateTime<Utc>>,
-        /// When to stop the mixer
-        #[clap(long)]
-        end_time: Option<DateTime<Utc>>,
-    },
     /// Update resolution and / or sample rate
     Update {
         /// The id of an existing mixer
@@ -299,6 +274,15 @@ fn main() -> Result<(), Error> {
                 NodeSubCommand::Disconnect { link_id } => {
                     Command::Graph(GraphCommand::Disconnect { link_id })
                 }
+                NodeSubCommand::Start {
+                    id,
+                    cue_time,
+                    end_time,
+                } => Command::Graph(GraphCommand::Start {
+                    id,
+                    cue_time,
+                    end_time,
+                }),
                 NodeSubCommand::Reschedule {
                     id,
                     cue_time,
@@ -311,38 +295,9 @@ fn main() -> Result<(), Error> {
                 NodeSubCommand::Remove { id } => Command::Graph(GraphCommand::Remove { id }),
                 NodeSubCommand::Status { id } => Command::Graph(GraphCommand::Status { id }),
             },
-            SubCommand::Source { subcmd } => match subcmd {
-                SourceSubCommand::Play {
-                    id,
-                    cue_time,
-                    end_time,
-                } => Command::Node(NodeCommand {
-                    id,
-                    command: NodeCommands::Source(SourceCommand::Play { cue_time, end_time }),
-                }),
-            },
-            SubCommand::Destination { subcmd } => match subcmd {
-                DestinationSubCommand::Start {
-                    id,
-                    cue_time,
-                    end_time,
-                } => Command::Node(NodeCommand {
-                    id,
-                    command: NodeCommands::Destination(DestinationCommand::Start {
-                        cue_time,
-                        end_time,
-                    }),
-                }),
-            },
+            SubCommand::Source { subcmd } => match subcmd {},
+            SubCommand::Destination { subcmd } => match subcmd {},
             SubCommand::Mixer { subcmd } => match subcmd {
-                MixerSubCommand::Start {
-                    id,
-                    cue_time,
-                    end_time,
-                } => Command::Node(NodeCommand {
-                    id,
-                    command: NodeCommands::Mixer(MixerCommand::Start { cue_time, end_time }),
-                }),
                 MixerSubCommand::Update {
                     id,
                     width,

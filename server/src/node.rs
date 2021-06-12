@@ -144,6 +144,21 @@ impl Message for ConsumerMessage {
     type Result = Result<(), Error>;
 }
 
+/// Start a node, sent from [`NodeManager`] to any [`Node`]
+#[derive(Debug)]
+pub struct StartMessage {
+    /// The start time of the [`Node`], if [`None`] it starts
+    /// immediately
+    pub cue_time: Option<DateTime<Utc>>,
+    /// The end time of the [`Node`], if [`None`] the node will
+    /// only stop if the underlying media ends
+    pub end_time: Option<DateTime<Utc>>,
+}
+
+impl Message for StartMessage {
+    type Result = Result<(), Error>;
+}
+
 /// Reschedule a node, sent from [`NodeManager`] to any [`Node`]
 #[derive(Debug)]
 pub struct ScheduleMessage {
@@ -197,6 +212,21 @@ enum Node {
 }
 
 impl Node {
+    /// Start the node
+    fn start(&mut self, msg: StartMessage) -> ResponseFuture<Result<(), Error>> {
+        let recipient: Recipient<StartMessage> = match self {
+            Node::Source(addr) => addr.clone().recipient(),
+            Node::Destination(addr) => addr.clone().recipient(),
+            Node::Mixer(addr) => addr.clone().recipient(),
+        };
+        Box::pin(async move {
+            match recipient.send(msg).await {
+                Ok(res) => res,
+                Err(err) => Err(anyhow!("Internal server error {}", err)),
+            }
+        })
+    }
+
     /// Reschedule the node
     fn schedule(&mut self, msg: ScheduleMessage) -> ResponseFuture<Result<(), Error>> {
         let recipient: Recipient<ScheduleMessage> = match self {
@@ -478,6 +508,29 @@ impl NodeManager {
         )
     }
 
+    /// Start a [`Node`]
+    #[instrument(level = "trace", name = "start-command", skip(self))]
+    fn send_start_command_future(
+        &mut self,
+        id: &str,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+        if let Some(node) = self.nodes.get(id) {
+            let mut node = node.clone();
+            Box::pin(
+                {
+                    async move { node.start(StartMessage { cue_time, end_time }).await }
+                        .into_actor(self)
+                        .then(move |res, _slf, _ctx| actix::fut::ready(res.map(|_| None)))
+                }
+                .in_current_actor_span(),
+            )
+        } else {
+            Box::pin(actix::fut::ready(Err(anyhow!("No node with id {}", id))))
+        }
+    }
+
     /// Reschedule a [`Node`]
     #[instrument(level = "trace", name = "schedule-command", skip(self))]
     fn send_schedule_command_future(
@@ -655,6 +708,11 @@ impl Handler<CommandMessage> for NodeManager {
                 GraphCommand::CreateMixer { id, config } => Box::pin(actix::fut::ready(
                     self.create_mixer(&id, config).map(|_| None),
                 )),
+                GraphCommand::Start {
+                    id,
+                    cue_time,
+                    end_time,
+                } => self.send_start_command_future(&id, cue_time, end_time),
                 GraphCommand::Reschedule {
                     id,
                     cue_time,

@@ -20,7 +20,7 @@
 
 use crate::node::{
     GetNodeInfoMessage, GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage,
-    StopMessage,
+    StartMessage, StopMessage,
 };
 use crate::utils::{
     make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
@@ -29,7 +29,7 @@ use actix::prelude::*;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use rtmp_switcher_controlling::controller::{NodeInfo, NodeStatus, SourceCommand, SourceInfo};
+use rtmp_switcher_controlling::controller::{NodeInfo, NodeStatus, SourceInfo};
 use tracing::{debug, error, instrument, trace};
 
 /// The pipeline and various GStreamer elements that the source
@@ -557,15 +557,19 @@ impl Handler<StreamMessage> for Source {
     }
 }
 
+impl Handler<StartMessage> for Source {
+    type Result = MessageResult<StartMessage>;
+
+    fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(self.play(ctx, msg.cue_time, msg.end_time))
+    }
+}
+
 impl Handler<SourceCommandMessage> for Source {
     type Result = MessageResult<SourceCommandMessage>;
 
-    fn handle(&mut self, msg: SourceCommandMessage, ctx: &mut Context<Self>) -> Self::Result {
-        match msg.command {
-            SourceCommand::Play { cue_time, end_time } => {
-                MessageResult(self.play(ctx, cue_time, end_time))
-            }
-        }
+    fn handle(&mut self, _msg: SourceCommandMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        MessageResult(Ok(()))
     }
 }
 
