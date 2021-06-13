@@ -9,21 +9,18 @@
 
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
-use chrono::{DateTime, Utc};
 use gst::prelude::*;
 use tracing::{debug, error, instrument, trace};
 
-use rtmp_switcher_controlling::controller::{
-    DestinationFamily, DestinationInfo, NodeInfo, State,
-};
+use rtmp_switcher_controlling::controller::{DestinationFamily, DestinationInfo, NodeInfo, State};
 
 use crate::node::{
     ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage, NodeManager, ScheduleMessage,
     StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
-    make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
-    WaitForEosMessage,
+    make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
+    StopManagerMessage, StreamProducer, WaitForEosMessage,
 };
 
 /// Represents the potential connection to a producer
@@ -42,12 +39,6 @@ pub struct Destination {
     id: String,
     /// Defines the nature of the destination
     family: DestinationFamily,
-    /// When the destination will start
-    cue_time: Option<DateTime<Utc>>,
-    /// When the destination will stop
-    end_time: Option<DateTime<Utc>>,
-    /// The state of the destination
-    state: State,
     /// The wrapped pipeline
     pipeline: gst::Pipeline,
     /// A helper for managing the pipeline
@@ -58,10 +49,10 @@ pub struct Destination {
     audio_appsrc: gst_app::AppSrc,
     /// Optional connection point
     consumer_slot: Option<ConsumerSlot>,
-    /// Scheduling timer
-    state_handle: Option<SpawnHandle>,
     /// Statistics timer
     monitor_handle: Option<SpawnHandle>,
+    /// Our state machine
+    state_machine: StateMachine,
 }
 
 impl Actor for Destination {
@@ -81,8 +72,10 @@ impl Actor for Destination {
 
     #[instrument(level = "debug", name = "stopping", skip(self, ctx), fields(id = %self.id))]
     fn stopping(&mut self, ctx: &mut Self::Context) -> Running {
+        self.stop_schedule(ctx);
+
         if self.wait_for_eos(ctx) {
-            self.state = State::Stopping;
+            self.state_machine.state = State::Stopping;
             Running::Continue
         } else {
             debug!("no need to wait for EOS");
@@ -134,22 +127,23 @@ impl Destination {
         Self {
             id: id.to_string(),
             family: family.clone(),
-            cue_time: None,
-            end_time: None,
-            state: State::Initial,
             pipeline,
             pipeline_manager: None,
             video_appsrc,
             audio_appsrc,
             consumer_slot: None,
-            state_handle: None,
             monitor_handle: None,
+            state_machine: StateMachine::default(),
         }
     }
 
     /// RTMP family
     #[instrument(level = "debug", name = "streaming", skip(self, ctx), fields(id = %self.id))]
-    fn start_rtmp_pipeline(&mut self, ctx: &mut Context<Self>, uri: &String) -> Result<(), Error> {
+    fn start_rtmp_pipeline(
+        &mut self,
+        ctx: &mut Context<Self>,
+        uri: &String,
+    ) -> Result<StateChangeResult, Error> {
         let vconv = make_element("videoconvert", None)?;
         let timecodestamper = make_element("timecodestamper", None)?;
         let timeoverlay = make_element("timeoverlay", None)?;
@@ -267,8 +261,6 @@ impl Destination {
             },
         ));
 
-        self.state = State::Started;
-
         let addr = ctx.address().clone();
         let id = self.id.clone();
         self.pipeline.call_async(move |pipeline| {
@@ -280,7 +272,7 @@ impl Destination {
             }
         });
 
-        Ok(())
+        Ok(StateChangeResult::Success)
     }
 
     /// LocalFile family
@@ -290,7 +282,7 @@ impl Destination {
         ctx: &mut Context<Self>,
         base_name: &str,
         max_size_time: Option<u32>,
-    ) -> Result<(), Error> {
+    ) -> Result<StateChangeResult, Error> {
         let vconv = make_element("videoconvert", None)?;
         let venc = make_element("nvh264enc", None).unwrap_or(make_element("x264enc", None)?);
         let vparse = make_element("h264parse", None)?;
@@ -350,8 +342,6 @@ impl Destination {
             debug!("started but not yet connected");
         }
 
-        self.state = State::Started;
-
         let addr = ctx.address().clone();
         let id = self.id.clone();
         self.pipeline.call_async(move |pipeline| {
@@ -363,99 +353,7 @@ impl Destination {
             }
         });
 
-        Ok(())
-    }
-
-    /// Progress through our state machine
-    #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
-    fn schedule_state(&mut self, ctx: &mut Context<Self>) {
-        if let Some(handle) = self.state_handle {
-            trace!("cancelling current state scheduling");
-            ctx.cancel_future(handle);
-        }
-
-        let next_time = match self.state {
-            State::Initial => self.cue_time,
-            State::Starting => unreachable!(),
-            State::Started => self.end_time,
-            State::Stopping => None,
-            State::Stopped => None,
-        };
-
-        if let Some(next_time) = next_time {
-            let now = Utc::now();
-
-            let timeout = next_time - now;
-
-            if timeout > chrono::Duration::zero() {
-                trace!("not ready to progress to next state");
-
-                self.state_handle = Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
-                    s.schedule_state(ctx);
-                }));
-            } else {
-                trace!("progressing to next state");
-                if let Err(err) = match self.state {
-                    State::Initial => match self.family.clone() {
-                        DestinationFamily::RTMP { uri } => self.start_rtmp_pipeline(ctx, &uri),
-                        DestinationFamily::LocalFile {
-                            base_name,
-                            max_size_time,
-                        } => self.start_local_file_pipeline(ctx, &base_name, max_size_time),
-                    },
-                    State::Starting => unreachable!(),
-                    State::Started => {
-                        ctx.stop();
-                        self.state = State::Stopping;
-                        Ok(())
-                    }
-                    State::Stopping | State::Stopped => Ok(()),
-                } {
-                    ctx.notify(ErrorMessage(format!(
-                        "Failed to advance destination state: {:?}",
-                        err
-                    )));
-                } else {
-                    self.schedule_state(ctx);
-                }
-            }
-        } else {
-            trace!("going back to sleep");
-        }
-    }
-
-    /// Implement Play command
-    #[instrument(level = "trace", name = "cueing", skip(self, ctx), fields(id = %self.id))]
-    fn start(
-        &mut self,
-        ctx: &mut Context<Self>,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> Result<(), Error> {
-        let cue_time = cue_time.unwrap_or(Utc::now());
-
-        if let Some(end_time) = end_time {
-            if cue_time >= end_time {
-                return Err(anyhow!("cue time >= end time"));
-            }
-        }
-
-        match self.state {
-            State::Initial => {
-                self.cue_time = Some(cue_time);
-                self.end_time = end_time;
-
-                self.schedule_state(ctx);
-            }
-            _ => {
-                return Err(anyhow!(
-                    "can't start destination with state {:?}",
-                    self.state
-                ));
-            }
-        }
-
-        Ok(())
+        Ok(StateChangeResult::Success)
     }
 
     /// Implement Connect command
@@ -470,7 +368,7 @@ impl Destination {
             return Err(anyhow!("destination already has a producer"));
         }
 
-        if self.state == State::Started {
+        if self.state_machine.state == State::Started {
             debug!("destination {} connecting to producers", self.id);
             video_producer.add_consumer(&self.video_appsrc, &link_id);
             audio_producer.add_consumer(&self.audio_appsrc, &link_id);
@@ -503,43 +401,13 @@ impl Destination {
         }
     }
 
-    /// Implement Reschedule command
-    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
-    fn reschedule(
-        &mut self,
-        ctx: &mut Context<Self>,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> Result<(), Error> {
-        match self.state {
-            State::Initial => Ok(()),
-            State::Starting => unreachable!(),
-            State::Started => {
-                if cue_time.is_some() {
-                    Err(anyhow!("can't change cue time when streaming"))
-                } else {
-                    Ok(())
-                }
-            }
-            State::Stopping | State::Stopped => {
-                Err(anyhow!("can't reschedule when stopping or stopped"))
-            }
-        }?;
-
-        update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
-
-        self.schedule_state(ctx);
-
-        Ok(())
-    }
-
     /// Wait for EOS to propagate down our pipeline before stopping
     // Returns true if calling code should wait before fully stopping
     #[instrument(level = "debug", name = "checking if waiting for EOS is needed", skip(self, ctx), fields(id = %self.id))]
     fn wait_for_eos(&mut self, ctx: &mut Context<Self>) -> bool {
-        match self.state {
+        match self.state_machine.state {
             State::Initial | State::Stopped => false,
-            State::Starting => unreachable!(),
+            State::Starting => false,
             _ => match self.consumer_slot.take() {
                 Some(slot) => {
                     let pipeline_manager = self.pipeline_manager.as_ref().unwrap();
@@ -559,7 +427,7 @@ impl Destination {
                             let span = tracing::debug_span!("stopping", id = %slf.id);
                             let _guard = span.enter();
                             debug!("waited for EOS");
-                            slf.state = State::Stopped;
+                            slf.state_machine.state = State::Stopped;
                             ctx.stop();
                             actix::fut::ready(())
                         });
@@ -570,6 +438,51 @@ impl Destination {
                 }
                 _ => false,
             },
+        }
+    }
+
+    #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
+    fn stop(&mut self, ctx: &mut Context<Self>) {
+        self.stop_schedule(ctx);
+        ctx.stop();
+    }
+}
+
+impl Schedulable<Self> for Destination {
+    fn state_machine(&self) -> &StateMachine {
+        &self.state_machine
+    }
+
+    fn state_machine_mut(&mut self) -> &mut StateMachine {
+        &mut self.state_machine
+    }
+
+    fn node_id(&self) -> &str {
+        &self.id
+    }
+
+    #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
+    fn transition(
+        &mut self,
+        ctx: &mut Context<Self>,
+        target: State,
+    ) -> Result<StateChangeResult, Error> {
+        match target {
+            State::Initial => Ok(StateChangeResult::Skip),
+            State::Starting => match self.family.clone() {
+                DestinationFamily::RTMP { uri } => self.start_rtmp_pipeline(ctx, &uri),
+                DestinationFamily::LocalFile {
+                    base_name,
+                    max_size_time,
+                } => self.start_local_file_pipeline(ctx, &base_name, max_size_time),
+            },
+            State::Started => Ok(StateChangeResult::Success),
+            State::Stopping => {
+                self.stop(ctx);
+                Ok(StateChangeResult::Success)
+            }
+            // We claim back our state machine from there on
+            State::Stopped => unreachable!(),
         }
     }
 }
@@ -593,7 +506,7 @@ impl Handler<StartMessage> for Destination {
     type Result = MessageResult<StartMessage>;
 
     fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
-        MessageResult(self.start(ctx, msg.cue_time, msg.end_time))
+        MessageResult(self.start_schedule(ctx, msg.cue_time, msg.end_time))
     }
 }
 
@@ -621,7 +534,7 @@ impl Handler<ErrorMessage> for Destination {
             format!("error-destination-{}", self.id),
         );
 
-        ctx.stop();
+        self.stop(ctx);
     }
 }
 
@@ -637,7 +550,7 @@ impl Handler<StopMessage> for Destination {
     type Result = Result<(), Error>;
 
     fn handle(&mut self, _msg: StopMessage, ctx: &mut Context<Self>) -> Self::Result {
-        ctx.stop();
+        self.stop(ctx);
         Ok(())
     }
 }
@@ -649,9 +562,9 @@ impl Handler<GetNodeInfoMessage> for Destination {
         Ok(NodeInfo::Destination(DestinationInfo {
             family: self.family.clone(),
             slot_id: self.consumer_slot.as_ref().map(|slot| slot.id.clone()),
-            cue_time: self.cue_time,
-            end_time: self.end_time,
-            state: self.state,
+            cue_time: self.state_machine.cue_time,
+            end_time: self.state_machine.end_time,
+            state: self.state_machine.state,
         }))
     }
 }

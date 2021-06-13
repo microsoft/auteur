@@ -5,7 +5,6 @@
 
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
-use chrono::{DateTime, Utc};
 use gst::prelude::*;
 use gst_base::prelude::*;
 use std::collections::HashMap;
@@ -21,7 +20,8 @@ use crate::node::{
     ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
-    make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
+    make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
+    StopManagerMessage, StreamProducer,
 };
 
 const DEFAULT_FALLBACK_TIMEOUT: u32 = 500;
@@ -59,12 +59,6 @@ pub struct MixingState {
 pub struct Mixer {
     /// Unique identifier
     id: String,
-    /// When the mixer will start
-    cue_time: Option<DateTime<Utc>>,
-    /// When the mixer will stop
-    end_time: Option<DateTime<Utc>>,
-    /// The state of the mixer
-    state: State,
     /// The wrapped pipeline
     pipeline: gst::Pipeline,
     /// A helper for managing the pipeline
@@ -91,8 +85,8 @@ pub struct Mixer {
     base_plate_capsfilter: Option<gst::Element>,
     /// For resizing our output video stream
     video_capsfilter: Option<gst::Element>,
-    /// Scheduling timer
-    state_handle: Option<SpawnHandle>,
+    /// Our state machine
+    state_machine: StateMachine,
 }
 
 impl Actor for Mixer {
@@ -154,9 +148,6 @@ impl Mixer {
 
         Self {
             id: id.to_string(),
-            cue_time: None,
-            end_time: None,
-            state: State::Initial,
             pipeline,
             pipeline_manager: None,
             audio_producer: StreamProducer::from(&audio_appsink),
@@ -173,7 +164,7 @@ impl Mixer {
             audio_capsfilter: None,
             video_capsfilter: None,
             base_plate_capsfilter: None,
-            state_handle: None,
+            state_machine: StateMachine::default(),
         }
     }
 
@@ -393,7 +384,7 @@ impl Mixer {
 
     /// Start our pipeline when cue_time is reached
     #[instrument(level = "debug", name = "mixing", skip(self, ctx), fields(id = %self.id))]
-    fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
+    fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<StateChangeResult, Error> {
         let vsrc = self.build_base_plate()?;
         let vqueue = make_element("queue", None)?;
         let vmixer = make_element("compositor", Some("compositor"))?;
@@ -516,8 +507,6 @@ impl Mixer {
             self.audio_producer.appsink().upcast_ref(),
         ])?;
 
-        self.state = State::Started;
-
         for (id, slot) in self.consumer_slots.iter_mut() {
             Mixer::connect_slot(
                 &self.pipeline,
@@ -564,7 +553,7 @@ impl Mixer {
         self.video_producer.forward();
         self.audio_producer.forward();
 
-        Ok(())
+        Ok(StateChangeResult::Success)
     }
     #[instrument(level = "debug", name = "updating slot volume", skip(self), fields(id = %self.id))]
     fn set_slot_volume(&mut self, slot_id: &str, volume: f64) -> Result<(), Error> {
@@ -673,91 +662,6 @@ impl Mixer {
         Ok(())
     }
 
-    /// Progress through our state machine
-    #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
-    fn schedule_state(&mut self, ctx: &mut Context<Self>) {
-        if let Some(handle) = self.state_handle {
-            trace!("cancelling current state scheduling");
-            ctx.cancel_future(handle);
-        }
-
-        let next_time = match self.state {
-            State::Initial => self.cue_time,
-            State::Starting => unreachable!(),
-            State::Started => self.end_time,
-            State::Stopping => unreachable!(),
-            State::Stopped => None,
-        };
-
-        if let Some(next_time) = next_time {
-            let now = Utc::now();
-
-            let timeout = next_time - now;
-
-            if timeout > chrono::Duration::zero() {
-                trace!("not ready to progress to next state");
-
-                self.state_handle = Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
-                    s.schedule_state(ctx);
-                }));
-            } else {
-                trace!("progressing to next state");
-                if let Err(err) = match self.state {
-                    State::Initial => self.start_pipeline(ctx),
-                    State::Starting => unreachable!(),
-                    State::Started => {
-                        ctx.stop();
-                        self.state = State::Stopped;
-                        Ok(())
-                    }
-                    State::Stopping => unreachable!(),
-                    State::Stopped => Ok(()),
-                } {
-                    ctx.notify(ErrorMessage(format!(
-                        "Failed to change mixer state: {:?}",
-                        err
-                    )));
-                } else {
-                    self.schedule_state(ctx);
-                }
-            }
-        } else {
-            trace!("going back to sleep");
-        }
-    }
-
-    /// Implement Start command
-    #[instrument(level = "trace", name = "cueing", skip(self, ctx), fields(id = %self.id))]
-    fn start(
-        &mut self,
-        ctx: &mut Context<Self>,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> Result<(), Error> {
-        let cue_time = cue_time.unwrap_or(Utc::now());
-
-        if let Some(end_time) = end_time {
-            if cue_time >= end_time {
-                return Err(anyhow!("cue time >= end time"));
-            }
-        }
-
-        match self.state {
-            State::Initial => {
-                self.cue_time = Some(cue_time);
-                self.end_time = end_time;
-
-                self.schedule_state(ctx);
-            }
-            State::Starting | State::Stopping => unreachable!(),
-            _ => {
-                return Err(anyhow!("can't start mixer with state {:?}", self.state));
-            }
-        }
-
-        Ok(())
-    }
-
     /// Implement Connect command
     #[instrument(level = "debug", name = "connecting", skip(self, video_producer, audio_producer), fields(id = %self.id))]
     fn connect(
@@ -802,7 +706,7 @@ impl Mixer {
             video_capsfilter: None,
         };
 
-        if self.state == State::Started {
+        if self.state_machine.state == State::Started {
             let vmixer = self.video_mixer.clone().unwrap();
             let amixer = self.audio_mixer.clone().unwrap();
 
@@ -861,33 +765,42 @@ impl Mixer {
         }
     }
 
-    /// Implement Reschedule command
-    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
-    fn reschedule(
+    #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
+    fn stop(&mut self, ctx: &mut Context<Self>) {
+        self.stop_schedule(ctx);
+        ctx.stop();
+    }
+}
+
+impl Schedulable<Self> for Mixer {
+    fn state_machine(&self) -> &StateMachine {
+        &self.state_machine
+    }
+
+    fn state_machine_mut(&mut self) -> &mut StateMachine {
+        &mut self.state_machine
+    }
+
+    fn node_id(&self) -> &str {
+        &self.id
+    }
+
+    #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
+    fn transition(
         &mut self,
         ctx: &mut Context<Self>,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> Result<(), Error> {
-        match self.state {
-            State::Initial => Ok(()),
-            State::Starting => unreachable!(),
-            State::Started => {
-                if cue_time.is_some() {
-                    Err(anyhow!("can't change cue time when mixing"))
-                } else {
-                    Ok(())
-                }
+        target: State,
+    ) -> Result<StateChangeResult, Error> {
+        match target {
+            State::Initial => Ok(StateChangeResult::Skip),
+            State::Starting => self.start_pipeline(ctx),
+            State::Started => Ok(StateChangeResult::Success),
+            State::Stopping => Ok(StateChangeResult::Skip),
+            State::Stopped => {
+                self.stop(ctx);
+                Ok(StateChangeResult::Success)
             }
-            State::Stopping => unreachable!(),
-            State::Stopped => Err(anyhow!("can't reschedule when stopped")),
-        }?;
-
-        update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
-
-        self.schedule_state(ctx);
-
-        Ok(())
+        }
     }
 }
 
@@ -910,7 +823,7 @@ impl Handler<StartMessage> for Mixer {
     type Result = MessageResult<StartMessage>;
 
     fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
-        MessageResult(self.start(ctx, msg.cue_time, msg.end_time))
+        MessageResult(self.start_schedule(ctx, msg.cue_time, msg.end_time))
     }
 }
 
@@ -996,9 +909,9 @@ impl Handler<GetNodeInfoMessage> for Mixer {
                 })
                 .collect(),
             consumer_slot_ids: self.video_producer.get_consumer_ids(),
-            cue_time: self.cue_time,
-            end_time: self.end_time,
-            state: self.state,
+            cue_time: self.state_machine.cue_time,
+            end_time: self.state_machine.end_time,
+            state: self.state_machine.state,
         }))
     }
 }

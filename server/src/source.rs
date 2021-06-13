@@ -23,13 +23,14 @@ use crate::node::{
     StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
-    make_element, update_times, ErrorMessage, PipelineManager, StopManagerMessage, StreamProducer,
+    make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
+    StopManagerMessage, StreamProducer,
 };
 use actix::prelude::*;
-use anyhow::{anyhow, Error};
+use anyhow::Error;
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use rtmp_switcher_controlling::controller::{NodeInfo, State, SourceInfo};
+use rtmp_switcher_controlling::controller::{NodeInfo, SourceInfo, State};
 use tracing::{debug, error, instrument, trace};
 
 /// The pipeline and various GStreamer elements that the source
@@ -59,22 +60,18 @@ pub struct Source {
     id: String,
     /// URI the source will play
     uri: String,
-    /// When the source will start
-    cue_time: Option<DateTime<Utc>>,
-    /// When the source will stop
-    end_time: Option<DateTime<Utc>>,
     /// Output audio producer
     audio_producer: StreamProducer,
     /// Output video producer
     video_producer: StreamProducer,
-    /// The state of the source
-    state: State,
     /// GStreamer elements when prerolling or playing
     media: Option<Media>,
     /// Scheduling timer
     state_handle: Option<SpawnHandle>,
     /// Statistics timer
     monitor_handle: Option<SpawnHandle>,
+    /// Our state machine
+    state_machine: StateMachine,
 }
 
 impl Source {
@@ -96,14 +93,12 @@ impl Source {
         Self {
             id: id.to_string(),
             uri: uri.to_string(),
-            cue_time: None,
-            end_time: None,
             audio_producer: StreamProducer::from(&audio_appsink),
             video_producer: StreamProducer::from(&video_appsink),
-            state: State::Initial,
             media: None,
             state_handle: None,
             monitor_handle: None,
+            state_machine: StateMachine::default(),
         }
     }
 
@@ -157,11 +152,7 @@ impl Source {
 
     /// Preroll the pipeline ahead of time (by default 10 seconds before cue time)
     #[instrument(level = "debug", name = "prerolling", skip(self, ctx), fields(id = %self.id))]
-    fn preroll(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        if self.state != State::Initial {
-            return Err(anyhow!("can't preroll source in state: {:?}", self.state));
-        }
-
+    fn preroll(&mut self, ctx: &mut Context<Self>) -> Result<StateChangeResult, Error> {
         let pipeline = gst::Pipeline::new(Some(&self.id.to_string()));
         let audio_appsink: &gst::Element = self.audio_producer.appsink().upcast_ref();
         let video_appsink: &gst::Element = self.video_producer.appsink().upcast_ref();
@@ -244,7 +235,6 @@ impl Source {
 
         debug!("now prerolling");
 
-        self.state = State::Starting;
         self.media = Some(Media {
             pipeline: pipeline.clone(),
             pipeline_manager: PipelineManager::new(
@@ -270,16 +260,12 @@ impl Source {
             }
         });
 
-        Ok(())
+        Ok(StateChangeResult::Success)
     }
 
     /// Unblock a prerolling pipeline
     #[instrument(level = "debug", name = "unblocking", skip(self), fields(id = %self.id))]
-    fn unblock(&mut self, ctx: &mut Context<Self>) -> Result<(), Error> {
-        if self.state != State::Starting {
-            return Err(anyhow!("can't play source in state: {:?}", self.state));
-        }
-
+    fn unblock(&mut self, ctx: &mut Context<Self>) -> Result<StateChangeResult, Error> {
         let media = self.media.as_ref().unwrap();
 
         media.src.emit_by_name("unblock", &[]).unwrap();
@@ -303,96 +289,7 @@ impl Source {
             },
         ));
 
-        self.state = State::Started;
-
-        Ok(())
-    }
-
-    /// Progress through our state machine
-    #[instrument(level = "trace", name = "scheduling", skip(self, ctx), fields(id = %self.id))]
-    fn schedule_state(&mut self, ctx: &mut Context<Self>) {
-        if let Some(handle) = self.state_handle {
-            trace!("cancelling current state scheduling");
-            ctx.cancel_future(handle);
-        }
-
-        let next_time = match self.state {
-            State::Initial => {
-                if let Some(cue_time) = self.cue_time {
-                    Some(cue_time - chrono::Duration::seconds(10))
-                } else {
-                    None
-                }
-            }
-            State::Starting => self.cue_time,
-            State::Started => self.end_time,
-            State::Stopping => unreachable!(),
-            State::Stopped => None,
-        };
-
-        if let Some(next_time) = next_time {
-            let now = Utc::now();
-
-            let timeout = next_time - now;
-
-            if timeout > chrono::Duration::zero() {
-                trace!("not ready to progress to next state");
-
-                self.state_handle = Some(ctx.run_later(timeout.to_std().unwrap(), |s, ctx| {
-                    s.schedule_state(ctx);
-                }));
-            } else {
-                trace!("progressing to next state");
-                if let Err(err) = match self.state {
-                    State::Initial => self.preroll(ctx),
-                    State::Starting => self.unblock(ctx),
-                    State::Started => {
-                        ctx.stop();
-                        self.state = State::Stopped;
-                        Ok(())
-                    }
-                    State::Stopping => unreachable!(),
-                    State::Stopped => Ok(()),
-                } {
-                    ctx.notify(ErrorMessage(format!("Failed to preroll source: {:?}", err)));
-                } else {
-                    self.schedule_state(ctx);
-                }
-            }
-        } else {
-            debug!("going back to sleep");
-        }
-    }
-
-    /// Implement Play
-    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
-    fn play(
-        &mut self,
-        ctx: &mut Context<Self>,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> Result<(), Error> {
-        let cue_time = cue_time.unwrap_or(Utc::now());
-
-        if let Some(end_time) = end_time {
-            if cue_time >= end_time {
-                return Err(anyhow!("cue time >= end time"));
-            }
-        }
-
-        match self.state {
-            State::Initial => {
-                self.cue_time = Some(cue_time);
-                self.end_time = end_time;
-
-                self.schedule_state(ctx);
-            }
-            _ => {
-                return Err(anyhow!("can't play source with state {:?}", self.state));
-            }
-        }
-
-        Ok(())
+        Ok(StateChangeResult::Success)
     }
 
     /// A new pad was added, or an existing pad EOS'd
@@ -408,7 +305,7 @@ impl Source {
                 debug!(id = %self.id, n_streams = %media.n_streams, "active stream finished");
 
                 if media.n_streams == 0 {
-                    ctx.stop()
+                    self.stop(ctx)
                 }
             }
         }
@@ -470,51 +367,30 @@ impl Source {
         }
     }
 
-    /// Implement Reschedule
-    #[instrument(level = "debug", name = "cueing", skip(self, ctx), fields(id = %self.id))]
-    fn reschedule(
-        &mut self,
-        ctx: &mut Context<Self>,
-        cue_time: Option<DateTime<Utc>>,
-        end_time: Option<DateTime<Utc>>,
-    ) -> Result<(), Error> {
-        match self.state {
-            State::Initial => Ok(()),
-            State::Starting => Ok(()),
-            State::Started => {
-                if cue_time.is_some() {
-                    Err(anyhow!("can't change cue time when playing"))
-                } else {
-                    Ok(())
-                }
-            }
-            State::Stopping => unreachable!(),
-            State::Stopped => Err(anyhow!("can't reschedule when stopped")),
-        }?;
+    #[instrument(level = "debug", skip(self), fields(id = %self.id))]
+    fn reinitialize(&mut self) -> Result<StateChangeResult, Error> {
+        if let Some(media) = self.media.take() {
+            debug!("tearing down previously prerolling pipeline");
+            let _ = media.pipeline.set_state(gst::State::Null);
 
-        update_times(&mut self.cue_time, &cue_time, &mut self.end_time, &end_time)?;
+            let audio_appsink: &gst::Element = self.audio_producer.appsink().upcast_ref();
+            let video_appsink: &gst::Element = self.video_producer.appsink().upcast_ref();
 
-        if cue_time.is_some() {
-            if let Some(media) = self.media.take() {
-                debug!("tearing down previously prerolling pipeline");
-                let _ = media.pipeline.set_state(gst::State::Null);
+            media
+                .pipeline
+                .remove_many(&[audio_appsink, video_appsink])
+                .unwrap();
 
-                let audio_appsink: &gst::Element = self.audio_producer.appsink().upcast_ref();
-                let video_appsink: &gst::Element = self.video_producer.appsink().upcast_ref();
-
-                media
-                    .pipeline
-                    .remove_many(&[audio_appsink, video_appsink])
-                    .unwrap();
-
-                let _ = media.pipeline_manager.do_send(StopManagerMessage);
-            }
-            self.state = State::Initial;
+            let _ = media.pipeline_manager.do_send(StopManagerMessage);
         }
 
-        self.schedule_state(ctx);
+        Ok(StateChangeResult::Success)
+    }
 
-        Ok(())
+    #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
+    fn stop(&mut self, ctx: &mut Context<Self>) {
+        self.stop_schedule(ctx);
+        ctx.stop();
     }
 }
 
@@ -535,6 +411,54 @@ impl Actor for Source {
             video_producer: Some(self.video_producer.clone()),
             audio_producer: Some(self.audio_producer.clone()),
         });
+    }
+}
+
+impl Schedulable<Self> for Source {
+    fn state_machine(&self) -> &StateMachine {
+        &self.state_machine
+    }
+
+    fn state_machine_mut(&mut self) -> &mut StateMachine {
+        &mut self.state_machine
+    }
+
+    fn node_id(&self) -> &str {
+        &self.id
+    }
+
+    fn next_time(&self) -> Option<DateTime<Utc>> {
+        match self.state_machine.state {
+            State::Initial => {
+                if let Some(cue_time) = self.state_machine.cue_time {
+                    Some(cue_time - chrono::Duration::seconds(10))
+                } else {
+                    None
+                }
+            }
+            State::Starting => self.state_machine.cue_time,
+            State::Started => self.state_machine.end_time,
+            State::Stopping => None,
+            State::Stopped => None,
+        }
+    }
+
+    #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
+    fn transition(
+        &mut self,
+        ctx: &mut Context<Self>,
+        target: State,
+    ) -> Result<StateChangeResult, Error> {
+        match target {
+            State::Initial => self.reinitialize(),
+            State::Starting => self.preroll(ctx),
+            State::Started => self.unblock(ctx),
+            State::Stopping => Ok(StateChangeResult::Skip),
+            State::Stopped => {
+                self.stop(ctx);
+                Ok(StateChangeResult::Success)
+            }
+        }
     }
 }
 
@@ -561,7 +485,7 @@ impl Handler<StartMessage> for Source {
     type Result = MessageResult<StartMessage>;
 
     fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
-        MessageResult(self.play(ctx, msg.cue_time, msg.end_time))
+        MessageResult(self.start_schedule(ctx, msg.cue_time, msg.end_time))
     }
 }
 
@@ -598,7 +522,7 @@ impl Handler<ErrorMessage> for Source {
             );
         }
 
-        ctx.stop();
+        self.stop(ctx);
     }
 }
 
@@ -667,7 +591,7 @@ impl Handler<StopMessage> for Source {
     type Result = Result<(), Error>;
 
     fn handle(&mut self, _msg: StopMessage, ctx: &mut Context<Self>) -> Self::Result {
-        ctx.stop();
+        self.stop(ctx);
         Ok(())
     }
 }
@@ -679,9 +603,9 @@ impl Handler<GetNodeInfoMessage> for Source {
         Ok(NodeInfo::Source(SourceInfo {
             uri: self.uri.clone(),
             consumer_slot_ids: self.video_producer.get_consumer_ids(),
-            cue_time: self.cue_time,
-            end_time: self.end_time,
-            state: self.state,
+            cue_time: self.state_machine.cue_time,
+            end_time: self.state_machine.end_time,
+            state: self.state_machine.state,
         }))
     }
 }
