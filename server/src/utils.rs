@@ -527,6 +527,47 @@ impl Handler<StopManagerMessage> for PipelineManager {
     }
 }
 
+#[cfg(not(test))]
+/// In normal operation, now is the actual system time
+pub fn get_now() -> DateTime<Utc> {
+    Utc::now()
+}
+
+#[cfg(test)]
+/// When testing, we sample a base system time, then base all future
+/// observations of the system time on the actix time, which progresses
+/// immediately on tokio sleep (eg actix run_later)
+///
+/// FIXME: does unsafe matter in tests? If so, how can we do this safely?
+pub fn get_now() -> DateTime<Utc> {
+    static mut UTC_BASE: Option<DateTime<Utc>> = None;
+    static mut ACTIX_BASE: Option<actix::clock::Instant> = None;
+
+    let ubase = unsafe {
+        match UTC_BASE {
+            Some(ubase) => ubase,
+            None => {
+                let ubase = Utc::now();
+                UTC_BASE = Some(ubase);
+                ubase
+            }
+        }
+    };
+
+    let abase = unsafe {
+        match ACTIX_BASE {
+            Some(abase) => abase,
+            None => {
+                let abase = actix::clock::Instant::now();
+                ACTIX_BASE = Some(abase);
+                abase
+            }
+        }
+    };
+
+    ubase + chrono::Duration::from_std(actix::clock::Instant::now() - abase).unwrap()
+}
+
 /// State machine governing the progression of a [`node`](crate::node) state
 /// along a timeline
 #[derive(Debug)]
@@ -613,7 +654,7 @@ where
         end_time: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
         let machine = self.state_machine_mut();
-        let cue_time = cue_time.unwrap_or(Utc::now());
+        let cue_time = cue_time.unwrap_or(get_now());
 
         if let Some(end_time) = end_time {
             if cue_time >= end_time {
@@ -699,7 +740,7 @@ where
         }
 
         if let Some(next_time) = next_time {
-            let now = Utc::now();
+            let now = get_now();
 
             let timeout = next_time - now;
 
@@ -924,6 +965,27 @@ pub mod tests {
         manager
             .send(CommandMessage {
                 command: Command::Graph(GraphCommand::Start {
+                    id: id.to_string(),
+                    cue_time,
+                    end_time,
+                }),
+            })
+            .await
+            .unwrap()
+            .map(|_| ())
+    }
+
+    /// Reschedule any node
+    pub async fn reschedule_node(
+        id: &str,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        let manager = NodeManager::from_registry();
+
+        manager
+            .send(CommandMessage {
+                command: Command::Graph(GraphCommand::Reschedule {
                     id: id.to_string(),
                     cue_time,
                     end_time,

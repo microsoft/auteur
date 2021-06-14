@@ -613,6 +613,7 @@ impl Handler<GetNodeInfoMessage> for Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::get_now;
     use crate::utils::tests::*;
     use std::collections::VecDeque;
     use test_env_log::test;
@@ -658,6 +659,66 @@ mod tests {
 
         // Start it up immediately
         start_node("test-source", None, None).await.unwrap();
+
+        let progression_result = listener_addr.send(WaitForProgressionMessage).await.unwrap();
+
+        assert!(progression_result.progressed_as_expected);
+    }
+
+    #[actix_rt::test]
+    #[test]
+    async fn test_reschedule() {
+        gst::init().unwrap();
+
+        let uri = asset_uri("ball.mp4");
+
+        // Expect state to progress to Started with no hiccup
+        let listener_addr = register_listener(
+            "test-source",
+            "test-listener",
+            VecDeque::from(vec![
+                State::Starting,
+                State::Initial,
+                State::Starting,
+                State::Started,
+            ]),
+        )
+        .await;
+
+        // Create a valid source
+        create_source("test-source", &uri).await.unwrap();
+
+        // "Pause" time, which will cause it to progress immediately on Sleep (eg actix' run_later)
+        tokio::time::pause();
+
+        let fut = tokio::time::sleep(std::time::Duration::from_secs(10));
+
+        let cue_time = get_now() + chrono::Duration::seconds(15);
+
+        tracing::info!("Scheduling for {:?}", cue_time);
+
+        // Start it up immediately
+        start_node("test-source", Some(cue_time), None)
+            .await
+            .unwrap();
+
+        // Wait for the node to have prerolled but not started
+        fut.await;
+
+        let info = node_info_unchecked("test-source").await;
+
+        if let NodeInfo::Source(sinfo) = info {
+            assert_eq!(sinfo.state, State::Starting);
+        } else {
+            panic!("Wrong info type");
+        }
+
+        let cue_time = get_now() + chrono::Duration::seconds(25);
+
+        // Reschedule, node state should reset to Initial
+        reschedule_node("test-source", Some(cue_time), None)
+            .await
+            .unwrap();
 
         let progression_result = listener_addr.send(WaitForProgressionMessage).await.unwrap();
 
