@@ -9,6 +9,7 @@ use actix::WeakRecipient;
 use futures::prelude::*;
 use gst::prelude::*;
 
+use crate::node::{NodeManager, NodeStateMessage};
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
@@ -663,7 +664,7 @@ where
 
         self.transition(ctx, State::Initial)?;
 
-        self.state_machine_mut().state = State::Initial;
+        self.update_state(State::Initial);
 
         Ok(())
     }
@@ -675,6 +676,14 @@ where
             trace!("cancelling current state scheduling");
             ctx.cancel_future(handle);
         }
+    }
+
+    fn update_state(&mut self, state: State) {
+        self.state_machine_mut().state = state;
+        let _ = NodeManager::from_registry().do_send(NodeStateMessage {
+            id: self.node_id().to_string(),
+            state,
+        });
     }
 
     /// Internal scheduling loop
@@ -717,12 +726,12 @@ where
                     match self.transition(ctx, target) {
                         Ok(StateChangeResult::Skip) => {
                             trace!("Skipping state {:?}", target);
-                            self.state_machine_mut().state = target;
+                            self.update_state(target);
                             continue;
                         }
                         Ok(StateChangeResult::Success) => {
                             trace!("Progressed to next state {:?}", target);
-                            self.state_machine_mut().state = target;
+                            self.update_state(target);
                             self.do_schedule(ctx);
                             break;
                         }
@@ -776,5 +785,203 @@ where
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use crate::node::{CommandMessage, NodeManager, NodeStateMessage, RegisterListenerMessage};
+    use actix::prelude::*;
+    use anyhow::Error;
+    use chrono::{DateTime, Utc};
+    use futures::channel::oneshot;
+    use rtmp_switcher_controlling::controller::{Command, GraphCommand, NodeInfo, State};
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use tracing::error;
+
+    /// The result once StateListener has tracked progression
+    #[derive(Debug)]
+    pub struct StateProgressionResult {
+        /// Whether the node went through all the expected states
+        pub progressed_as_expected: bool,
+        /// Whether the node notified an error
+        pub errored_out: bool,
+    }
+
+    /// Sent from tests to [`StateListener`] to wait for the node
+    /// to have progressed through the expected states
+    #[derive(Debug)]
+    pub struct WaitForProgressionMessage;
+
+    impl Message for WaitForProgressionMessage {
+        type Result = StateProgressionResult;
+    }
+
+    /// Actor that registers itself with NodeManager to track the
+    /// progression of a node through its states
+    pub struct StateListener {
+        /// Unique id of the tracked node
+        id: String,
+        /// The expected state progression
+        expected_progression: VecDeque<State>,
+        /// To signal that we're done tracking progress
+        progress_sender: Option<oneshot::Sender<StateProgressionResult>>,
+        /// To wait for progress to finish tracking
+        progress_receiver: Option<oneshot::Receiver<StateProgressionResult>>,
+    }
+
+    impl Handler<WaitForProgressionMessage> for StateListener {
+        type Result = ResponseFuture<StateProgressionResult>;
+
+        fn handle(
+            &mut self,
+            _msg: WaitForProgressionMessage,
+            _ctx: &mut Context<Self>,
+        ) -> Self::Result {
+            let progress_receiver = self.progress_receiver.take().unwrap();
+
+            Box::pin(async move { progress_receiver.await.unwrap() })
+        }
+    }
+
+    impl StateListener {
+        fn new(node_id: &str, expected_progression: VecDeque<State>) -> Self {
+            let (progress_sender, progress_receiver) = oneshot::channel::<StateProgressionResult>();
+            Self {
+                id: node_id.to_string(),
+                expected_progression,
+                progress_sender: Some(progress_sender),
+                progress_receiver: Some(progress_receiver),
+            }
+        }
+    }
+
+    impl Actor for StateListener {
+        type Context = Context<Self>;
+    }
+
+    impl Handler<NodeStateMessage> for StateListener {
+        type Result = ();
+
+        fn handle(&mut self, msg: NodeStateMessage, _ctx: &mut Self::Context) -> Self::Result {
+            if msg.id != self.id {
+                return;
+            }
+
+            let expected = self.expected_progression.pop_front().unwrap();
+
+            if msg.state == expected {
+                if self.expected_progression.is_empty() {
+                    let progress_sender = self.progress_sender.take().unwrap();
+                    progress_sender
+                        .send(StateProgressionResult {
+                            progressed_as_expected: true,
+                            errored_out: false,
+                        })
+                        .unwrap();
+                }
+            } else {
+                error!(
+                    "Unexpected state progression, expected {:?} got {:?}",
+                    expected, msg.state
+                );
+                let progress_sender = self.progress_sender.take().unwrap();
+                progress_sender
+                    .send(StateProgressionResult {
+                        progressed_as_expected: false,
+                        errored_out: false,
+                    })
+                    .unwrap();
+            }
+        }
+    }
+
+    /// Create a source
+    pub async fn create_source(id: &str, uri: &str) -> Result<(), Error> {
+        let manager = NodeManager::from_registry();
+
+        manager
+            .send(CommandMessage {
+                command: Command::Graph(GraphCommand::CreateSource {
+                    id: id.to_string(),
+                    uri: uri.to_string(),
+                }),
+            })
+            .await
+            .unwrap()
+            .map(|_| ())
+    }
+
+    /// Start any node
+    pub async fn start_node(
+        id: &str,
+        cue_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        let manager = NodeManager::from_registry();
+
+        manager
+            .send(CommandMessage {
+                command: Command::Graph(GraphCommand::Start {
+                    id: id.to_string(),
+                    cue_time,
+                    end_time,
+                }),
+            })
+            .await
+            .unwrap()
+            .map(|_| ())
+    }
+
+    /// Get NodeInfo *for an existing node*. Unwraps for convenience
+    pub async fn node_info_unchecked(id: &str) -> NodeInfo {
+        let manager = NodeManager::from_registry();
+
+        manager
+            .send(CommandMessage {
+                command: Command::Graph(GraphCommand::Status {
+                    id: Some(id.to_string()),
+                }),
+            })
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .nodes
+            .remove(&id.to_owned())
+            .unwrap()
+    }
+
+    /// Get the uri of an asset in our test assets directory
+    pub fn asset_uri(name: &str) -> String {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("tests/assets/");
+        path.push(&name);
+
+        format!("file://{}", path.to_str().unwrap())
+    }
+
+    /// Register a state listener to track the progress of node's states
+    pub async fn register_listener(
+        node_id: &str,
+        id: &str,
+        expected_progression: VecDeque<State>,
+    ) -> Addr<StateListener> {
+        let manager = NodeManager::from_registry();
+
+        let listener = StateListener::new(node_id, expected_progression);
+        let listener_addr = listener.start();
+
+        manager
+            .send(RegisterListenerMessage {
+                id: id.to_string(),
+                recipient: listener_addr.clone().downgrade().recipient(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        listener_addr
     }
 }

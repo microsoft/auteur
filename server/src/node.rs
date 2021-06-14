@@ -11,13 +11,14 @@ use crate::mixer::Mixer;
 use crate::source::Source;
 use crate::utils::StreamProducer;
 use actix::prelude::*;
+use actix::WeakRecipient;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use futures::prelude::*;
 use rtmp_switcher_controlling::controller::{
     Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
-    NodeCommand, NodeCommands, NodeInfo, SourceCommand, Status,
+    NodeCommand, NodeCommands, NodeInfo, SourceCommand, State, Status,
 };
 use std::collections::HashMap;
 use tracing::{debug, info, instrument, trace, warn};
@@ -60,6 +61,9 @@ pub struct NodeManager {
     /// Used when the manager is "stopping", to ensure all nodes have fully
     /// stopped before exiting. Useful for propagating EOS.
     no_more_modes_sender: Option<oneshot::Sender<()>>,
+    /// Listeners for unit tests and potential user interfaces.
+    /// Listener id -> recipient
+    listeners: HashMap<String, WeakRecipient<NodeStateMessage>>,
 }
 
 /// Sent from [`controllers`](crate::controller::Controller), this is our
@@ -215,6 +219,30 @@ impl Message for GetNodeInfoMessage {
     type Result = Result<NodeInfo, Error>;
 }
 
+/// Sent from [`Node`] to [`NodeManager`] so that it can inform listeners
+/// of nodes' state progression
+#[derive(Debug, Clone)]
+pub struct NodeStateMessage {
+    pub id: String,
+    pub state: State,
+}
+
+impl Message for NodeStateMessage {
+    type Result = ();
+}
+
+/// Sent from any [`NodeMessage`] recipient to [`NodeManager`] to register
+/// a state listener
+#[derive(Debug)]
+pub struct RegisterListenerMessage {
+    pub id: String,
+    pub recipient: WeakRecipient<NodeStateMessage>,
+}
+
+impl Message for RegisterListenerMessage {
+    type Result = Result<(), Error>;
+}
+
 /// All the node types NodeManager supports
 #[derive(Clone)]
 enum Node {
@@ -290,6 +318,7 @@ impl Default for NodeManager {
             links: HashMap::new(),
             consumers: HashMap::new(),
             producers: HashMap::new(),
+            listeners: HashMap::new(),
             no_more_modes_sender: None,
         }
     }
@@ -701,6 +730,31 @@ impl NodeManager {
             .in_current_actor_span(),
         )
     }
+
+    fn add_listener(
+        &mut self,
+        id: String,
+        recipient: WeakRecipient<NodeStateMessage>,
+    ) -> Result<(), Error> {
+        if self.listeners.contains_key(&id) {
+            Err(anyhow!("A node already exists with id {}", id))
+        } else {
+            self.listeners.insert(id, recipient);
+
+            Ok(())
+        }
+    }
+
+    fn notify_listeners(&mut self, message: NodeStateMessage) {
+        self.listeners.retain(|_id, recipient| {
+            if let Some(recipient) = recipient.upgrade() {
+                let _ = recipient.do_send(message.clone());
+                true
+            } else {
+                false
+            }
+        })
+    }
 }
 
 impl Handler<CommandMessage> for NodeManager {
@@ -806,5 +860,23 @@ impl Handler<StopMessage> for NodeManager {
 
             Ok(())
         })
+    }
+}
+
+impl Handler<RegisterListenerMessage> for NodeManager {
+    type Result = Result<(), Error>;
+
+    #[instrument(level = "debug", name = "registering listener", skip(self, _ctx))]
+    fn handle(&mut self, msg: RegisterListenerMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        self.add_listener(msg.id, msg.recipient)
+    }
+}
+
+impl Handler<NodeStateMessage> for NodeManager {
+    type Result = ();
+
+    #[instrument(level = "trace", name = "notifying listeners", skip(self, _ctx))]
+    fn handle(&mut self, msg: NodeStateMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        self.notify_listeners(msg)
     }
 }

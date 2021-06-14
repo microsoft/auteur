@@ -609,3 +609,58 @@ impl Handler<GetNodeInfoMessage> for Source {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::tests::*;
+    use std::collections::VecDeque;
+    use test_env_log::test;
+
+    #[actix_rt::test]
+    #[test]
+    async fn test_status_after_create() {
+        gst::init().unwrap();
+        let uri = asset_uri("ball.mp4");
+
+        // Create a valid source
+        create_source("test-source", &uri).await.unwrap();
+
+        let info = node_info_unchecked("test-source").await;
+
+        if let NodeInfo::Source(sinfo) = info {
+            assert_eq!(sinfo.uri, uri);
+            assert!(sinfo.consumer_slot_ids.is_empty());
+            assert!(sinfo.cue_time.is_none());
+            assert!(sinfo.end_time.is_none());
+            assert_eq!(sinfo.state, State::Initial);
+        } else {
+            panic!("Wrong info type");
+        }
+    }
+
+    #[actix_rt::test]
+    #[test]
+    async fn test_start_immediate() {
+        gst::init().unwrap();
+        let uri = asset_uri("ball.mp4");
+
+        // Expect state to progress to Started with no hiccup
+        let listener_addr = register_listener(
+            "test-source",
+            "test-listener",
+            VecDeque::from(vec![State::Starting, State::Started]),
+        )
+        .await;
+
+        // Create a valid source
+        create_source("test-source", &uri).await.unwrap();
+
+        // Start it up immediately
+        start_node("test-source", None, None).await.unwrap();
+
+        let progression_result = listener_addr.send(WaitForProgressionMessage).await.unwrap();
+
+        assert!(progression_result.progressed_as_expected);
+    }
+}
