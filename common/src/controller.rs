@@ -288,15 +288,11 @@ pub struct Info {
 #[serde(rename_all = "lowercase")]
 pub enum CommandResult {
     /// The command resulted in an error
-    Error {
-        /// The error message
-        message: String,
-    },
+    Error(String),
     /// The command was successful
-    Success {
-        /// An optional [`Info`]
-        info: Option<Info>,
-    },
+    Success,
+    /// Information about one or all nodes
+    Info(Info),
 }
 
 /// Messages sent from the the server to the controller.

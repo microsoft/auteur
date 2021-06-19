@@ -17,11 +17,11 @@ use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use futures::prelude::*;
 use rtmp_switcher_controlling::controller::{
-    Command, DestinationCommand, DestinationFamily, GraphCommand, Info, MixerCommand, MixerConfig,
-    NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
+    Command, CommandResult, DestinationCommand, DestinationFamily, GraphCommand, Info,
+    MixerCommand, MixerConfig, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
 };
 use std::collections::HashMap;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace};
 use tracing_actix::ActorInstrument;
 use tracing_futures::Instrument;
 
@@ -75,7 +75,7 @@ pub struct CommandMessage {
 }
 
 impl Message for CommandMessage {
-    type Result = Result<Option<Info>, Error>;
+    type Result = CommandResult;
 }
 
 /// Source-specific commands, sent from [`NodeManager`] to [`Source`]
@@ -338,9 +338,9 @@ impl SystemService for NodeManager {
 
 impl NodeManager {
     /// Create a [`Source`] and store it as a producer
-    fn create_source(&mut self, id: &str, uri: &str) -> Result<(), Error> {
+    fn create_source(&mut self, id: &str, uri: &str) -> CommandResult {
         if self.nodes.contains_key(id) {
-            return Err(anyhow!("A node already exists with id {}", id));
+            return CommandResult::Error(format!("A node already exists with id {}", id));
         }
 
         let source = Source::new(id, uri);
@@ -354,13 +354,13 @@ impl NodeManager {
 
         trace!("Created source {}", id);
 
-        Ok(())
+        CommandResult::Success
     }
 
     /// Create a [`Destination`] and store it as a consumer
-    fn create_destination(&mut self, id: &str, family: &DestinationFamily) -> Result<(), Error> {
+    fn create_destination(&mut self, id: &str, family: &DestinationFamily) -> CommandResult {
         if self.nodes.contains_key(id) {
-            return Err(anyhow!("A node already exists with id {}", id));
+            return CommandResult::Error(format!("A node already exists with id {}", id));
         }
 
         let dest = Destination::new(id, family);
@@ -374,13 +374,13 @@ impl NodeManager {
 
         trace!("Created destination {}", id);
 
-        Ok(())
+        CommandResult::Success
     }
 
     /// Create a [`Mixer`] and store it as both a consumer and a producer
-    fn create_mixer(&mut self, id: &str, config: MixerConfig) -> Result<(), Error> {
+    fn create_mixer(&mut self, id: &str, config: MixerConfig) -> CommandResult {
         if self.nodes.contains_key(id) {
-            return Err(anyhow!("A node already exists with id {}", id));
+            return CommandResult::Error(format!("A node already exists with id {}", id));
         }
 
         let mixer = Mixer::new(id, config);
@@ -394,7 +394,7 @@ impl NodeManager {
 
         trace!("Created mixer {}", id);
 
-        Ok(())
+        CommandResult::Success
     }
 
     /// Remove a node from our collections by id
@@ -408,12 +408,12 @@ impl NodeManager {
     }
 
     /// Tell a node to stop, by id
-    fn stop_node(&mut self, id: &str) -> Result<(), Error> {
+    fn stop_node(&mut self, id: &str) -> CommandResult {
         if let Some(node) = self.nodes.get_mut(id) {
             node.stop();
-            Ok(())
+            CommandResult::Success
         } else {
-            Err(anyhow!("No node with id {}", id))
+            CommandResult::Error(format!("No node with id {}", id))
         }
     }
 
@@ -454,17 +454,20 @@ impl NodeManager {
         &mut self,
         id: &str,
         command: SourceCommand,
-    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
+    ) -> ResponseActFuture<Self, CommandResult> {
         let source = match self.nodes.get(id) {
             Some(Node::Source(source)) => source.clone(),
             Some(_) => {
-                return Box::pin(actix::fut::ready(Err(anyhow!(
+                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
                     "node with id {} is not a source",
                     id
                 ))));
             }
             None => {
-                return Box::pin(actix::fut::ready(Err(anyhow!("No source with id {}", id))));
+                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
+                    "No source with id {}",
+                    id
+                ))));
             }
         };
 
@@ -474,8 +477,10 @@ impl NodeManager {
                     .into_actor(self)
                     .then(move |res, _slf, _ctx| {
                         actix::fut::ready(match res {
-                            Ok(res) => res.map(|_| None),
-                            Err(err) => Err(anyhow!("Internal server error {}", err)),
+                            Ok(_) => CommandResult::Success,
+                            Err(err) => {
+                                CommandResult::Error(format!("Internal server error {}", err))
+                            }
                         })
                     })
             }
@@ -489,17 +494,17 @@ impl NodeManager {
         &mut self,
         id: &str,
         command: DestinationCommand,
-    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
+    ) -> ResponseActFuture<Self, CommandResult> {
         let dest = match self.nodes.get(id) {
             Some(Node::Destination(dest)) => dest.clone(),
             Some(_) => {
-                return Box::pin(actix::fut::ready(Err(anyhow!(
+                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
                     "node with id {} is not a destination",
                     id
                 ))));
             }
             None => {
-                return Box::pin(actix::fut::ready(Err(anyhow!(
+                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
                     "No destination with id {}",
                     id
                 ))));
@@ -512,8 +517,10 @@ impl NodeManager {
                     .into_actor(self)
                     .then(move |res, _slf, _ctx| {
                         actix::fut::ready(match res {
-                            Ok(res) => res.map(|_| None),
-                            Err(err) => Err(anyhow!("Internal server error {}", err)),
+                            Ok(_) => CommandResult::Success,
+                            Err(err) => {
+                                CommandResult::Error(format!("Internal server error {}", err))
+                            }
                         })
                     })
             }
@@ -527,17 +534,20 @@ impl NodeManager {
         &mut self,
         id: &str,
         command: MixerCommand,
-    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
+    ) -> ResponseActFuture<Self, CommandResult> {
         let mixer = match self.nodes.get(id) {
             Some(Node::Mixer(mixer)) => mixer.clone(),
             Some(_) => {
-                return Box::pin(actix::fut::ready(Err(anyhow!(
+                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
                     "node with id {} is not a mixer",
                     id
                 ))));
             }
             None => {
-                return Box::pin(actix::fut::ready(Err(anyhow!("No mixer with id {}", id))));
+                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
+                    "No mixer with id {}",
+                    id
+                ))));
             }
         };
 
@@ -547,8 +557,10 @@ impl NodeManager {
                     .into_actor(self)
                     .then(move |res, _slf, _ctx| {
                         actix::fut::ready(match res {
-                            Ok(res) => res.map(|_| None),
-                            Err(err) => Err(anyhow!("Internal server error {}", err)),
+                            Ok(_) => CommandResult::Success,
+                            Err(err) => {
+                                CommandResult::Error(format!("Internal server error {}", err))
+                            }
                         })
                     })
             }
@@ -563,19 +575,27 @@ impl NodeManager {
         id: &str,
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
-    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
+    ) -> ResponseActFuture<Self, CommandResult> {
         if let Some(node) = self.nodes.get(id) {
             let mut node = node.clone();
             Box::pin(
                 {
                     async move { node.start(StartMessage { cue_time, end_time }).await }
                         .into_actor(self)
-                        .then(move |res, _slf, _ctx| actix::fut::ready(res.map(|_| None)))
+                        .then(move |res, _slf, _ctx| {
+                            actix::fut::ready(match res {
+                                Ok(_) => CommandResult::Success,
+                                Err(err) => CommandResult::Error(format!("{}", err)),
+                            })
+                        })
                 }
                 .in_current_actor_span(),
             )
         } else {
-            Box::pin(actix::fut::ready(Err(anyhow!("No node with id {}", id))))
+            Box::pin(actix::fut::ready(CommandResult::Error(format!(
+                "No node with id {}",
+                id
+            ))))
         }
     }
 
@@ -586,19 +606,27 @@ impl NodeManager {
         id: &str,
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
-    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
+    ) -> ResponseActFuture<Self, CommandResult> {
         if let Some(node) = self.nodes.get(id) {
             let mut node = node.clone();
             Box::pin(
                 {
                     async move { node.schedule(ScheduleMessage { cue_time, end_time }).await }
                         .into_actor(self)
-                        .then(move |res, _slf, _ctx| actix::fut::ready(res.map(|_| None)))
+                        .then(move |res, _slf, _ctx| {
+                            actix::fut::ready(match res {
+                                Ok(_) => CommandResult::Success,
+                                Err(err) => CommandResult::Error(format!("{}", err)),
+                            })
+                        })
                 }
                 .in_current_actor_span(),
             )
         } else {
-            Box::pin(actix::fut::ready(Err(anyhow!("No node with id {}", id))))
+            Box::pin(actix::fut::ready(CommandResult::Error(format!(
+                "No node with id {}",
+                id
+            ))))
         }
     }
 
@@ -609,12 +637,12 @@ impl NodeManager {
         link_id: &str,
         src: &str,
         sink: &str,
-    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
+    ) -> ResponseActFuture<Self, CommandResult> {
         let producer = match self.producers.get(src) {
             Some(producer) => producer.clone(),
             None => {
                 return Box::pin({
-                    actix::fut::ready(Err(anyhow!("No producer with id {}", src)))
+                    actix::fut::ready(CommandResult::Error(format!("No producer with id {}", src)))
                 });
             }
         };
@@ -623,7 +651,10 @@ impl NodeManager {
             Some(consumer) => consumer.clone(),
             None => {
                 return Box::pin({
-                    actix::fut::ready(Err(anyhow!("No consumer with id {}", sink)))
+                    actix::fut::ready(CommandResult::Error(format!(
+                        "No consumer with id {}",
+                        sink
+                    )))
                 });
             }
         };
@@ -658,17 +689,17 @@ impl NodeManager {
                     .into_actor(self)
                     .then(move |res, slf, _ctx| {
                         actix::fut::ready(match res {
-                            Ok(res) => {
-                                if res.is_ok() {
+                            Ok(res) => match res {
+                                Ok(_) => {
                                     debug!("Link established");
                                     slf.links.insert(link_id_clone, consumer_clone);
-                                } else {
-                                    warn!("Failed to establish link");
+                                    CommandResult::Success
                                 }
-
-                                res.map(|_| None)
+                                Err(err) => CommandResult::Error(format!("{}", err)),
+                            },
+                            Err(err) => {
+                                CommandResult::Error(format!("Internal server error {}", err))
                             }
-                            Err(err) => Err(anyhow!("Internal server error {}", err)),
                         })
                     })
             }
@@ -678,27 +709,27 @@ impl NodeManager {
 
     /// Disconnect a consumer by id
     #[instrument(level = "trace", name = "disconnect-command", skip(self))]
-    fn disconnect(&mut self, link_id: &str) -> Result<(), Error> {
+    fn disconnect(&mut self, link_id: &str) -> CommandResult {
         if let Some(mut consumer) = self.links.remove(link_id) {
             self.disconnect_consumer(&mut consumer, link_id.to_string());
-            Ok(())
+            CommandResult::Success
         } else {
-            Err(anyhow!("no link with id {}", link_id))
+            CommandResult::Error(format!("no link with id {}", link_id))
         }
     }
 
     /// Get the info either of a specific [`Node`], or of all nodes
     #[instrument(level = "trace", name = "get-info-command", skip(self))]
-    fn get_info_future(
-        &mut self,
-        id: Option<&String>,
-    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
+    fn get_info_future(&mut self, id: Option<&String>) -> ResponseActFuture<Self, CommandResult> {
         let mut nodes: Vec<(String, Node)> = match id {
             Some(id) => {
                 if let Some(node) = self.nodes.get(id) {
                     vec![(id.clone(), node.clone())]
                 } else {
-                    return Box::pin(actix::fut::ready(Err(anyhow!("No node with id {}", id))));
+                    return Box::pin(actix::fut::ready(CommandResult::Error(format!(
+                        "No node with id {}",
+                        id
+                    ))));
                 }
             }
             None => self
@@ -718,13 +749,13 @@ impl NodeManager {
                 }
                 .into_actor(self)
                 .then(move |mut res, _slf, _ctx| {
-                    actix::fut::ready(Ok(Some(Info {
+                    actix::fut::ready(CommandResult::Info(Info {
                         nodes: res
                             .drain(..)
                             .filter(|res| res.is_ok())
                             .map(|res| res.unwrap())
                             .collect(),
-                    })))
+                    }))
                 })
             }
             .in_current_actor_span(),
@@ -758,7 +789,7 @@ impl NodeManager {
 }
 
 impl Handler<CommandMessage> for NodeManager {
-    type Result = ResponseActFuture<Self, Result<Option<Info>, Error>>;
+    type Result = ResponseActFuture<Self, CommandResult>;
 
     #[instrument(level = "trace", name = "command", skip(self, _ctx))]
     fn handle(&mut self, msg: CommandMessage, _ctx: &mut Context<Self>) -> Self::Result {
@@ -770,17 +801,17 @@ impl Handler<CommandMessage> for NodeManager {
                     sink_id,
                 } => self.connect_future(&link_id, &src_id, &sink_id),
                 GraphCommand::Disconnect { link_id } => {
-                    Box::pin(actix::fut::ready(self.disconnect(&link_id).map(|_| None)))
+                    Box::pin(actix::fut::ready(self.disconnect(&link_id)))
                 }
-                GraphCommand::CreateSource { id, uri } => Box::pin(actix::fut::ready(
-                    self.create_source(&id, &uri).map(|_| None),
-                )),
-                GraphCommand::CreateDestination { id, family } => Box::pin(actix::fut::ready(
-                    self.create_destination(&id, &family).map(|_| None),
-                )),
-                GraphCommand::CreateMixer { id, config } => Box::pin(actix::fut::ready(
-                    self.create_mixer(&id, config).map(|_| None),
-                )),
+                GraphCommand::CreateSource { id, uri } => {
+                    Box::pin(actix::fut::ready(self.create_source(&id, &uri)))
+                }
+                GraphCommand::CreateDestination { id, family } => {
+                    Box::pin(actix::fut::ready(self.create_destination(&id, &family)))
+                }
+                GraphCommand::CreateMixer { id, config } => {
+                    Box::pin(actix::fut::ready(self.create_mixer(&id, config)))
+                }
                 GraphCommand::Start {
                     id,
                     cue_time,
@@ -791,9 +822,7 @@ impl Handler<CommandMessage> for NodeManager {
                     cue_time,
                     end_time,
                 } => self.send_schedule_command_future(&id, cue_time, end_time),
-                GraphCommand::Remove { id } => {
-                    Box::pin(actix::fut::ready(self.stop_node(&id).map(|_| None)))
-                }
+                GraphCommand::Remove { id } => Box::pin(actix::fut::ready(self.stop_node(&id))),
                 GraphCommand::GetInfo { id } => self.get_info_future(id.as_ref()),
             },
             Command::Node(cmd) => match cmd {

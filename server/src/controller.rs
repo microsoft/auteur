@@ -51,23 +51,15 @@ impl Controller {
             .into_actor(self)
             .then(move |res, _, ctx| {
                 match res {
-                    Ok(res) => match res {
-                        Ok(res) => {
-                            ctx.text(
-                                serde_json::to_string(&ServerMessage {
-                                    id: Some(command_id),
-                                    result: CommandResult::Success { info: res },
-                                })
-                                .expect("failed to serialize CommandResult message"),
-                            );
-                        }
-                        Err(err) => {
-                            ctx.notify(ErrorMessage {
-                                msg: format!("Failed to run command: {:?}", err),
-                                command_id: Some(command_id),
-                            });
-                        }
-                    },
+                    Ok(res) => {
+                        ctx.text(
+                            serde_json::to_string(&ServerMessage {
+                                id: Some(command_id),
+                                result: res,
+                            })
+                            .expect("failed to serialize CommandResult message"),
+                        );
+                    }
                     Err(err) => {
                         ctx.notify(ErrorMessage {
                             msg: format!("Internal server error: {}", err),
@@ -176,7 +168,7 @@ impl Handler<ErrorMessage> for Controller {
         ctx.text(
             serde_json::to_string(&ServerMessage {
                 id: msg.command_id,
-                result: CommandResult::Error { message: msg.msg },
+                result: CommandResult::Error(msg.msg),
             })
             .expect("Failed to serialize error message"),
         );

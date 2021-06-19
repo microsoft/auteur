@@ -165,18 +165,16 @@ impl Controller {
                     // shut down once our command has been executed
                     ControllerEvent::WebSocket(msg) => {
                         match msg.result {
-                            CommandResult::Error { message } => {
+                            CommandResult::Error(message) => {
                                 eprintln!("Server error: {}", message);
                             }
-                            CommandResult::Success { info } => match info {
-                                None => {
-                                    println!("Command ran successfully");
-                                }
-                                Some(info) => {
-                                    println!("Received info:");
-                                    println!("{}", serde_json::to_string_pretty(&info).unwrap());
-                                }
-                            },
+                            CommandResult::Success => {
+                                println!("Command ran successfully");
+                            }
+                            CommandResult::Info(info) => {
+                                println!("Received info:");
+                                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+                            }
                         }
 
                         let exit_on_response_id = exit_on_response_id_clone.lock().unwrap();
