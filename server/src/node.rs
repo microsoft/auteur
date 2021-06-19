@@ -17,8 +17,8 @@ use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use futures::prelude::*;
 use rtmp_switcher_controlling::controller::{
-    Command, DestinationCommand, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
-    NodeCommand, NodeCommands, NodeInfo, SourceCommand, State, Status,
+    Command, DestinationCommand, DestinationFamily, GraphCommand, Info, MixerCommand, MixerConfig,
+    NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
 };
 use std::collections::HashMap;
 use tracing::{debug, info, instrument, trace, warn};
@@ -75,7 +75,7 @@ pub struct CommandMessage {
 }
 
 impl Message for CommandMessage {
-    type Result = Result<Option<Status>, Error>;
+    type Result = Result<Option<Info>, Error>;
 }
 
 /// Source-specific commands, sent from [`NodeManager`] to [`Source`]
@@ -454,7 +454,7 @@ impl NodeManager {
         &mut self,
         id: &str,
         command: SourceCommand,
-    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
         let source = match self.nodes.get(id) {
             Some(Node::Source(source)) => source.clone(),
             Some(_) => {
@@ -489,7 +489,7 @@ impl NodeManager {
         &mut self,
         id: &str,
         command: DestinationCommand,
-    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
         let dest = match self.nodes.get(id) {
             Some(Node::Destination(dest)) => dest.clone(),
             Some(_) => {
@@ -527,7 +527,7 @@ impl NodeManager {
         &mut self,
         id: &str,
         command: MixerCommand,
-    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
         let mixer = match self.nodes.get(id) {
             Some(Node::Mixer(mixer)) => mixer.clone(),
             Some(_) => {
@@ -563,7 +563,7 @@ impl NodeManager {
         id: &str,
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
-    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
         if let Some(node) = self.nodes.get(id) {
             let mut node = node.clone();
             Box::pin(
@@ -586,7 +586,7 @@ impl NodeManager {
         id: &str,
         cue_time: Option<DateTime<Utc>>,
         end_time: Option<DateTime<Utc>>,
-    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
         if let Some(node) = self.nodes.get(id) {
             let mut node = node.clone();
             Box::pin(
@@ -609,7 +609,7 @@ impl NodeManager {
         link_id: &str,
         src: &str,
         sink: &str,
-    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
         let producer = match self.producers.get(src) {
             Some(producer) => producer.clone(),
             None => {
@@ -687,12 +687,12 @@ impl NodeManager {
         }
     }
 
-    /// Get the status either of a specific [`Node`], or of all nodes
-    #[instrument(level = "trace", name = "status-command", skip(self))]
-    fn get_status_future(
+    /// Get the info either of a specific [`Node`], or of all nodes
+    #[instrument(level = "trace", name = "get-info-command", skip(self))]
+    fn get_info_future(
         &mut self,
         id: Option<&String>,
-    ) -> ResponseActFuture<Self, Result<Option<Status>, Error>> {
+    ) -> ResponseActFuture<Self, Result<Option<Info>, Error>> {
         let mut nodes: Vec<(String, Node)> = match id {
             Some(id) => {
                 if let Some(node) = self.nodes.get(id) {
@@ -718,7 +718,7 @@ impl NodeManager {
                 }
                 .into_actor(self)
                 .then(move |mut res, _slf, _ctx| {
-                    actix::fut::ready(Ok(Some(Status {
+                    actix::fut::ready(Ok(Some(Info {
                         nodes: res
                             .drain(..)
                             .filter(|res| res.is_ok())
@@ -758,7 +758,7 @@ impl NodeManager {
 }
 
 impl Handler<CommandMessage> for NodeManager {
-    type Result = ResponseActFuture<Self, Result<Option<Status>, Error>>;
+    type Result = ResponseActFuture<Self, Result<Option<Info>, Error>>;
 
     #[instrument(level = "trace", name = "command", skip(self, _ctx))]
     fn handle(&mut self, msg: CommandMessage, _ctx: &mut Context<Self>) -> Self::Result {
@@ -794,7 +794,7 @@ impl Handler<CommandMessage> for NodeManager {
                 GraphCommand::Remove { id } => {
                     Box::pin(actix::fut::ready(self.stop_node(&id).map(|_| None)))
                 }
-                GraphCommand::Status { id } => self.get_status_future(id.as_ref()),
+                GraphCommand::GetInfo { id } => self.get_info_future(id.as_ref()),
             },
             Command::Node(cmd) => match cmd {
                 NodeCommand { id, command } => match command {

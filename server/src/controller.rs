@@ -56,7 +56,7 @@ impl Controller {
                             ctx.text(
                                 serde_json::to_string(&ServerMessage {
                                     id: Some(command_id),
-                                    result: CommandResult::Success { status: res },
+                                    result: CommandResult::Success { info: res },
                                 })
                                 .expect("failed to serialize CommandResult message"),
                             );

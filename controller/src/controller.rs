@@ -168,13 +168,13 @@ impl Controller {
                             CommandResult::Error { message } => {
                                 eprintln!("Server error: {}", message);
                             }
-                            CommandResult::Success { status } => match status {
+                            CommandResult::Success { info } => match info {
                                 None => {
                                     println!("Command ran successfully");
                                 }
-                                Some(status) => {
-                                    println!("Received status:");
-                                    println!("{}", serde_json::to_string_pretty(&status).unwrap());
+                                Some(info) => {
+                                    println!("Received info:");
+                                    println!("{}", serde_json::to_string_pretty(&info).unwrap());
                                 }
                             },
                         }

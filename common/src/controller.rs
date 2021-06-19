@@ -142,9 +142,9 @@ pub enum GraphCommand {
         /// Identifier of an existing connection
         link_id: String,
     },
-    /// Retrieve the status of one or all nodes
-    Status {
-        /// The id of an existing node, or None, in which case the status
+    /// Retrieve the info of one or all nodes
+    GetInfo {
+        /// The id of an existing node, or None, in which case the info
         /// of all nodes in the system will be gathered
         id: Option<String>,
     },
@@ -276,10 +276,10 @@ pub enum NodeInfo {
     Mixer(MixerInfo),
 }
 
-/// A map of node-specific information in reply to a status command
+/// A map of node-specific information in reply to a GetInfo command
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub struct Status {
+pub struct Info {
     pub nodes: HashMap<String, NodeInfo>,
 }
 
@@ -294,8 +294,8 @@ pub enum CommandResult {
     },
     /// The command was successful
     Success {
-        /// An optional [`Status`]
-        status: Option<Status>,
+        /// An optional [`Info`]
+        info: Option<Info>,
     },
 }
 

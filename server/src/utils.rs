@@ -1002,7 +1002,7 @@ pub mod tests {
 
         manager
             .send(CommandMessage {
-                command: Command::Graph(GraphCommand::Status {
+                command: Command::Graph(GraphCommand::GetInfo {
                     id: Some(id.to_string()),
                 }),
             })

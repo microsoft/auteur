@@ -100,8 +100,8 @@ enum NodeSubCommand {
         /// The id of the node
         id: String,
     },
-    /// Retrieve the status for all or a specific node
-    Status {
+    /// Retrieve the info of all nodes or a specific node
+    GetInfo {
         /// The id of the node, if not specified, all nodes
         id: Option<String>,
     },
@@ -293,7 +293,7 @@ fn main() -> Result<(), Error> {
                     end_time,
                 }),
                 NodeSubCommand::Remove { id } => Command::Graph(GraphCommand::Remove { id }),
-                NodeSubCommand::Status { id } => Command::Graph(GraphCommand::Status { id }),
+                NodeSubCommand::GetInfo { id } => Command::Graph(GraphCommand::GetInfo { id }),
             },
             SubCommand::Source { subcmd } => match subcmd {},
             SubCommand::Destination { subcmd } => match subcmd {},

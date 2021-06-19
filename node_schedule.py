@@ -125,8 +125,8 @@ def set_mixer_slot_volume(id_, slot_id, volume):
 def later(delay):
     return NOW + datetime.timedelta(seconds=delay)
 
-def get_status(id_=None):
-    cmd = [EXE, SERVER, 'node', 'status']
+def get_info(id_=None):
+    cmd = [EXE, SERVER, 'node', 'get-info']
 
     if id_ is not None:
         cmd += [id_]
@@ -137,13 +137,13 @@ def get_status(id_=None):
 if __name__ == '__main__':
     create_mixer('channel-1', 720, 480, 44100, fallback_image='/home/meh/Pictures/bark.jpg')
     create_rtmp_destination('centricular-output', 'rtmp://learntv-transcoder.eastus.azurecontainer.io/live/centricular-output')
-    create_local_file_destination('local', '/home/meh/devel/gst-build/sandbox/rtmp-switcher/capture', max_size_time=5000)
+    create_local_file_destination('local', '/home/meh/devel/gst-build/sandbox/rtmp-switcher/capture')
     start_node('centricular-output')
-    start_node('local', later(5), later(35))
+    start_node('local', later(5), later(20))
     connect('channel-1', 'centricular-output')
     connect('channel-1', 'local')
     start_node('channel-1')
 
     link_id = schedule_source('file:///home/meh/Videos/big_buck_bunny_720_stereo.mp4', 'bbb', 'channel-1', later(5))
 
-    get_status('bbb')
+    get_info('bbb')
