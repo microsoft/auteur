@@ -17,7 +17,7 @@ use rtmp_switcher_controlling::controller::{
 
 use crate::node::{
     ConsumerMessage, GetNodeInfoMessage, GetProducerMessage, MixerCommandMessage, NodeManager,
-    ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
+    NodeStatusMessage, ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
@@ -849,6 +849,11 @@ impl Handler<ErrorMessage> for Mixer {
 
     fn handle(&mut self, msg: ErrorMessage, ctx: &mut Context<Self>) -> Self::Result {
         error!("Got error message '{}' on destination {}", msg.0, self.id,);
+
+        NodeManager::from_registry().do_send(NodeStatusMessage::Error {
+            id: self.id.clone(),
+            message: msg.0,
+        });
 
         gst::debug_bin_to_dot_file_with_ts(
             &self.pipeline,

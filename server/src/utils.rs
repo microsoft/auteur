@@ -9,7 +9,7 @@ use actix::WeakRecipient;
 use futures::prelude::*;
 use gst::prelude::*;
 
-use crate::node::{NodeManager, NodeStateMessage};
+use crate::node::{NodeManager, NodeStatusMessage};
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
@@ -721,7 +721,7 @@ where
 
     fn update_state(&mut self, state: State) {
         self.state_machine_mut().state = state;
-        let _ = NodeManager::from_registry().do_send(NodeStateMessage {
+        let _ = NodeManager::from_registry().do_send(NodeStatusMessage::State {
             id: self.node_id().to_string(),
             state,
         });
@@ -831,12 +831,14 @@ where
 
 #[cfg(test)]
 pub mod tests {
-    use crate::node::{CommandMessage, NodeManager, NodeStateMessage, RegisterListenerMessage};
+    use crate::node::{CommandMessage, NodeManager, NodeStatusMessage, RegisterListenerMessage};
     use actix::prelude::*;
-    use anyhow::Error;
+    use anyhow::{anyhow, Error};
     use chrono::{DateTime, Utc};
     use futures::channel::oneshot;
-    use rtmp_switcher_controlling::controller::{Command, GraphCommand, NodeInfo, State};
+    use rtmp_switcher_controlling::controller::{
+        Command, CommandResult, GraphCommand, NodeInfo, State,
+    };
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use tracing::error;
@@ -870,6 +872,8 @@ pub mod tests {
         progress_sender: Option<oneshot::Sender<StateProgressionResult>>,
         /// To wait for progress to finish tracking
         progress_receiver: Option<oneshot::Receiver<StateProgressionResult>>,
+        /// Track whether the node encountered an error
+        errored_out: bool,
     }
 
     impl Handler<WaitForProgressionMessage> for StateListener {
@@ -894,6 +898,7 @@ pub mod tests {
                 expected_progression,
                 progress_sender: Some(progress_sender),
                 progress_receiver: Some(progress_receiver),
+                errored_out: false,
             }
         }
     }
@@ -902,38 +907,49 @@ pub mod tests {
         type Context = Context<Self>;
     }
 
-    impl Handler<NodeStateMessage> for StateListener {
+    impl Handler<NodeStatusMessage> for StateListener {
         type Result = ();
 
-        fn handle(&mut self, msg: NodeStateMessage, _ctx: &mut Self::Context) -> Self::Result {
-            if msg.id != self.id {
-                return;
-            }
+        fn handle(&mut self, msg: NodeStatusMessage, _ctx: &mut Self::Context) -> Self::Result {
+            match msg {
+                NodeStatusMessage::State { id, state } => {
+                    if id != self.id {
+                        return;
+                    }
 
-            let expected = self.expected_progression.pop_front().unwrap();
+                    let expected = self.expected_progression.pop_front().unwrap();
 
-            if msg.state == expected {
-                if self.expected_progression.is_empty() {
-                    let progress_sender = self.progress_sender.take().unwrap();
-                    progress_sender
-                        .send(StateProgressionResult {
-                            progressed_as_expected: true,
-                            errored_out: false,
-                        })
-                        .unwrap();
+                    if state == expected {
+                        if self.expected_progression.is_empty() {
+                            let progress_sender = self.progress_sender.take().unwrap();
+                            progress_sender
+                                .send(StateProgressionResult {
+                                    progressed_as_expected: true,
+                                    errored_out: self.errored_out,
+                                })
+                                .unwrap();
+                        }
+                    } else {
+                        error!(
+                            "Unexpected state progression, expected {:?} got {:?}",
+                            expected, state
+                        );
+                        let progress_sender = self.progress_sender.take().unwrap();
+                        progress_sender
+                            .send(StateProgressionResult {
+                                progressed_as_expected: false,
+                                errored_out: self.errored_out,
+                            })
+                            .unwrap();
+                    }
                 }
-            } else {
-                error!(
-                    "Unexpected state progression, expected {:?} got {:?}",
-                    expected, msg.state
-                );
-                let progress_sender = self.progress_sender.take().unwrap();
-                progress_sender
-                    .send(StateProgressionResult {
-                        progressed_as_expected: false,
-                        errored_out: false,
-                    })
-                    .unwrap();
+                NodeStatusMessage::Error { id, .. } => {
+                    if id != self.id {
+                        return;
+                    }
+
+                    self.errored_out = true;
+                }
             }
         }
     }
@@ -942,7 +958,7 @@ pub mod tests {
     pub async fn create_source(id: &str, uri: &str) -> Result<(), Error> {
         let manager = NodeManager::from_registry();
 
-        manager
+        match manager
             .send(CommandMessage {
                 command: Command::Graph(GraphCommand::CreateSource {
                     id: id.to_string(),
@@ -951,7 +967,11 @@ pub mod tests {
             })
             .await
             .unwrap()
-            .map(|_| ())
+        {
+            CommandResult::Success => Ok(()),
+            CommandResult::Error(err) => Err(anyhow!(err)),
+            CommandResult::Info(_) => unreachable!(),
+        }
     }
 
     /// Start any node
@@ -962,7 +982,7 @@ pub mod tests {
     ) -> Result<(), Error> {
         let manager = NodeManager::from_registry();
 
-        manager
+        match manager
             .send(CommandMessage {
                 command: Command::Graph(GraphCommand::Start {
                     id: id.to_string(),
@@ -972,7 +992,11 @@ pub mod tests {
             })
             .await
             .unwrap()
-            .map(|_| ())
+        {
+            CommandResult::Success => Ok(()),
+            CommandResult::Error(err) => Err(anyhow!(err)),
+            CommandResult::Info(_) => unreachable!(),
+        }
     }
 
     /// Reschedule any node
@@ -983,7 +1007,7 @@ pub mod tests {
     ) -> Result<(), Error> {
         let manager = NodeManager::from_registry();
 
-        manager
+        match manager
             .send(CommandMessage {
                 command: Command::Graph(GraphCommand::Reschedule {
                     id: id.to_string(),
@@ -993,14 +1017,18 @@ pub mod tests {
             })
             .await
             .unwrap()
-            .map(|_| ())
+        {
+            CommandResult::Success => Ok(()),
+            CommandResult::Error(err) => Err(anyhow!(err)),
+            CommandResult::Info(_) => unreachable!(),
+        }
     }
 
     /// Get NodeInfo *for an existing node*. Unwraps for convenience
     pub async fn node_info_unchecked(id: &str) -> NodeInfo {
         let manager = NodeManager::from_registry();
 
-        manager
+        if let CommandResult::Info(mut info) = manager
             .send(CommandMessage {
                 command: Command::Graph(GraphCommand::GetInfo {
                     id: Some(id.to_string()),
@@ -1008,11 +1036,11 @@ pub mod tests {
             })
             .await
             .unwrap()
-            .unwrap()
-            .unwrap()
-            .nodes
-            .remove(&id.to_owned())
-            .unwrap()
+        {
+            info.nodes.remove(&id.to_owned()).unwrap()
+        } else {
+            unreachable!()
+        }
     }
 
     /// Get the uri of an asset in our test assets directory

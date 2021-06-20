@@ -19,8 +19,8 @@
 //! in mind.
 
 use crate::node::{
-    GetNodeInfoMessage, GetProducerMessage, NodeManager, ScheduleMessage, SourceCommandMessage,
-    StartMessage, StopMessage, StoppedMessage,
+    GetNodeInfoMessage, GetProducerMessage, NodeManager, NodeStatusMessage, ScheduleMessage,
+    SourceCommandMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
@@ -513,6 +513,11 @@ impl Handler<ErrorMessage> for Source {
 
     fn handle(&mut self, msg: ErrorMessage, ctx: &mut Context<Self>) -> Self::Result {
         error!("Got error message '{}' on source {}", msg.0, self.id,);
+
+        NodeManager::from_registry().do_send(NodeStatusMessage::Error {
+            id: self.id.clone(),
+            message: msg.0,
+        });
 
         if let Some(media) = &self.media {
             gst::debug_bin_to_dot_file_with_ts(

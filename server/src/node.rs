@@ -63,7 +63,7 @@ pub struct NodeManager {
     no_more_modes_sender: Option<oneshot::Sender<()>>,
     /// Listeners for unit tests and potential user interfaces.
     /// Listener id -> recipient
-    listeners: HashMap<String, WeakRecipient<NodeStateMessage>>,
+    listeners: HashMap<String, WeakRecipient<NodeStatusMessage>>,
 }
 
 /// Sent from [`controllers`](crate::controller::Controller), this is our
@@ -220,14 +220,16 @@ impl Message for GetNodeInfoMessage {
 }
 
 /// Sent from [`Node`] to [`NodeManager`] so that it can inform listeners
-/// of nodes' state progression
+/// of nodes' status
 #[derive(Debug, Clone)]
-pub struct NodeStateMessage {
-    pub id: String,
-    pub state: State,
+pub enum NodeStatusMessage {
+    /// Node state changed
+    State { id: String, state: State },
+    /// Node encountered an error
+    Error { id: String, message: String },
 }
 
-impl Message for NodeStateMessage {
+impl Message for NodeStatusMessage {
     type Result = ();
 }
 
@@ -236,7 +238,7 @@ impl Message for NodeStateMessage {
 #[derive(Debug)]
 pub struct RegisterListenerMessage {
     pub id: String,
-    pub recipient: WeakRecipient<NodeStateMessage>,
+    pub recipient: WeakRecipient<NodeStatusMessage>,
 }
 
 impl Message for RegisterListenerMessage {
@@ -765,7 +767,7 @@ impl NodeManager {
     fn add_listener(
         &mut self,
         id: String,
-        recipient: WeakRecipient<NodeStateMessage>,
+        recipient: WeakRecipient<NodeStatusMessage>,
     ) -> Result<(), Error> {
         if self.listeners.contains_key(&id) {
             Err(anyhow!("A node already exists with id {}", id))
@@ -776,7 +778,7 @@ impl NodeManager {
         }
     }
 
-    fn notify_listeners(&mut self, message: NodeStateMessage) {
+    fn notify_listeners(&mut self, message: NodeStatusMessage) {
         self.listeners.retain(|_id, recipient| {
             if let Some(recipient) = recipient.upgrade() {
                 let _ = recipient.do_send(message.clone());
@@ -901,11 +903,11 @@ impl Handler<RegisterListenerMessage> for NodeManager {
     }
 }
 
-impl Handler<NodeStateMessage> for NodeManager {
+impl Handler<NodeStatusMessage> for NodeManager {
     type Result = ();
 
     #[instrument(level = "trace", name = "notifying listeners", skip(self, _ctx))]
-    fn handle(&mut self, msg: NodeStateMessage, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: NodeStatusMessage, _ctx: &mut Context<Self>) -> Self::Result {
         self.notify_listeners(msg)
     }
 }
