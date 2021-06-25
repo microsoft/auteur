@@ -1,4 +1,4 @@
-# RTMP switcher
+# Auteur
 
 The current scope of this project is that of a basic live node
 compositor, with a service exposing a JSON API for creating,
@@ -46,13 +46,13 @@ cargo build
 Run the service:
 
 ``` shell
-RTMP_SWITCHER_LOG=debug cargo run --bin rtmp-switcher
+AUTEUR_LOG=debug cargo run --bin auteur
 ```
 
 Explore and test the API with the client:
 
 ``` shell
-cargo run --bin rtmp-switcher-controller -- help
+cargo run --bin auteur-controller -- help
 ```
 
 You can also find the API definition in `common/src/controller.rs`.

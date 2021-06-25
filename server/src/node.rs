@@ -16,7 +16,7 @@ use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use futures::prelude::*;
-use rtmp_switcher_controlling::controller::{
+use auteur_controlling::controller::{
     Command, CommandResult, DestinationCommand, DestinationFamily, GraphCommand, Info,
     MixerCommand, MixerConfig, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
 };
@@ -233,7 +233,7 @@ impl Message for NodeStatusMessage {
     type Result = ();
 }
 
-/// Sent from any [`NodeMessage`] recipient to [`NodeManager`] to register
+/// Sent from any [`NodeStatusMessage`] recipient to [`NodeManager`] to register
 /// a state listener
 #[derive(Debug)]
 pub struct RegisterListenerMessage {

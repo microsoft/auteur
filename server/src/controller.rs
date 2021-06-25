@@ -1,7 +1,7 @@
 //! Interface with remote controller
 //!
 //! Receives JSON messages through websockets, conforming with
-//! [`this protocol`](rtmp_switcher_controlling::controller)
+//! [`this protocol`](auteur_controlling::controller)
 
 use crate::node::{CommandMessage, NodeManager};
 
@@ -13,7 +13,7 @@ use actix_web_actors::ws;
 
 use tracing::{debug, error, instrument, trace};
 
-use rtmp_switcher_controlling::controller::{
+use auteur_controlling::controller::{
     Command, CommandResult, ControllerMessage, ServerMessage,
 };
 

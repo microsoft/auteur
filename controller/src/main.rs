@@ -1,4 +1,4 @@
-//! An example client to interface with the rtmp switcher service
+//! An example client to interface with the Auteur service
 
 use anyhow::Error;
 use chrono::{DateTime, Utc};
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 mod controller;
 use controller::Controller;
 
-use rtmp_switcher_controlling::controller::{
+use auteur_controlling::controller::{
     Command, DestinationFamily, GraphCommand, MixerCommand, MixerConfig, NodeCommand, NodeCommands,
 };
 
@@ -17,7 +17,7 @@ use rtmp_switcher_controlling::controller::{
 #[clap(setting = AppSettings::ColoredHelp)]
 /// Top-level options
 struct Opts {
-    /// Address of the rtmp switcher, e.g. https://localhost:8080
+    /// Address of the Auteur server, e.g. https://localhost:8080
     server: String,
     /// TLS Certificate chain file.
     pub certificate_file: Option<PathBuf>,
@@ -206,8 +206,8 @@ fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
 
     let env = env_logger::Env::new()
-        .filter_or("RTMP_SWITCHER_CONTROLLER_LOG", "warn")
-        .write_style("RTMP_SWITCHER_CONTROLLER_LOG_STYLE");
+        .filter_or("AUTEUR_CONTROLLER_LOG", "warn")
+        .write_style("AUTEUR_CONTROLLER_LOG_STYLE");
     env_logger::init_from_env(env);
 
     let mut runtime = tokio::runtime::Builder::new()

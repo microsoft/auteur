@@ -381,6 +381,73 @@ dependencies = [
 ]
 
 [[package]]
+name = "auteur"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "actix-files",
+ "actix-http",
+ "actix-rt",
+ "actix-service",
+ "actix-web",
+ "actix-web-actors",
+ "actix-web-httpauth",
+ "anyhow",
+ "auteur-controlling",
+ "chrono",
+ "futures 0.3.15",
+ "glib 0.10.3",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-base",
+ "gstreamer-video",
+ "openssl",
+ "priority-queue",
+ "serde",
+ "serde_json",
+ "smallvec 1.6.1",
+ "structopt",
+ "test-env-log",
+ "tokio 1.6.1",
+ "tracing",
+ "tracing-actix",
+ "tracing-actix-web",
+ "tracing-appender",
+ "tracing-error",
+ "tracing-futures 0.1.1",
+ "tracing-log",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "auteur-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-tungstenite",
+ "auteur-controlling",
+ "chrono",
+ "clap 3.0.0-beta.2",
+ "env_logger",
+ "futures 0.3.15",
+ "log",
+ "openssl",
+ "serde_json",
+ "tokio 0.2.25",
+ "uuid",
+]
+
+[[package]]
+name = "auteur-controlling"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1978,73 +2045,6 @@ name = "regex-syntax"
 version = "0.6.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f497285884f3fcff424ffc933e56d7cbca511def0c9831a7f9b5f6153e3cc89b"
-
-[[package]]
-name = "rtmp-switcher"
-version = "0.1.0"
-dependencies = [
- "actix",
- "actix-files",
- "actix-http",
- "actix-rt",
- "actix-service",
- "actix-web",
- "actix-web-actors",
- "actix-web-httpauth",
- "anyhow",
- "chrono",
- "futures 0.3.15",
- "glib 0.10.3",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-base",
- "gstreamer-video",
- "openssl",
- "priority-queue",
- "rtmp-switcher-controlling",
- "serde",
- "serde_json",
- "smallvec 1.6.1",
- "structopt",
- "test-env-log",
- "tokio 1.6.1",
- "tracing",
- "tracing-actix",
- "tracing-actix-web",
- "tracing-appender",
- "tracing-error",
- "tracing-futures 0.1.1",
- "tracing-log",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "rtmp-switcher-controller"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-tungstenite",
- "chrono",
- "clap 3.0.0-beta.2",
- "env_logger",
- "futures 0.3.15",
- "log",
- "openssl",
- "rtmp-switcher-controlling",
- "serde_json",
- "tokio 0.2.25",
- "uuid",
-]
-
-[[package]]
-name = "rtmp-switcher-controlling"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "uuid",
-]
 
 [[package]]
 name = "rustc_version"

@@ -13,7 +13,7 @@ use crate::node::{NodeManager, NodeStatusMessage};
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
-use rtmp_switcher_controlling::controller::State;
+use auteur_controlling::controller::State;
 use tracing::{debug, error, instrument, trace, warn};
 
 /// The interface for transporting media data from one node
@@ -836,7 +836,7 @@ pub mod tests {
     use anyhow::{anyhow, Error};
     use chrono::{DateTime, Utc};
     use futures::channel::oneshot;
-    use rtmp_switcher_controlling::controller::{
+    use auteur_controlling::controller::{
         Command, CommandResult, GraphCommand, NodeInfo, State,
     };
     use std::collections::VecDeque;

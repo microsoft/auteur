@@ -30,7 +30,7 @@ use actix::prelude::*;
 use anyhow::Error;
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use rtmp_switcher_controlling::controller::{NodeInfo, SourceInfo, State};
+use auteur_controlling::controller::{NodeInfo, SourceInfo, State};
 use tracing::{debug, error, instrument, trace};
 
 /// The pipeline and various GStreamer elements that the source

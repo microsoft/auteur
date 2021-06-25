@@ -14,7 +14,7 @@ use futures::prelude::*;
 
 use log::{debug, error, info, trace, warn};
 
-use rtmp_switcher_controlling::controller::{
+use auteur_controlling::controller::{
     Command, CommandResult, ControllerMessage, ServerMessage,
 };
 

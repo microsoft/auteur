@@ -158,7 +158,7 @@ pub enum Command {
     Graph(GraphCommand),
 }
 
-/// Messages sent from the controller to the switcher.
+/// Messages sent from the controller to the server.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct ControllerMessage {

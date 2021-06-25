@@ -5,7 +5,7 @@ use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-    name = "rtmp-switcher",
+    name = "auteur",
     about = "Manages RTMP channels through a REST API"
 )]
 pub struct Config {

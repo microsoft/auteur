@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, instrument, trace};
 
-use rtmp_switcher_controlling::controller::{
+use auteur_controlling::controller::{
     MixerCommand, MixerConfig, MixerInfo, MixerSlotInfo, NodeInfo, State,
 };
 

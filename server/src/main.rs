@@ -1,7 +1,7 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
-//! rtmp-switcher is a service that implements a
-//! [`control interface`](rtmp_switcher_controlling::controller)
+//! Auteur is a service that implements a
+//! [`control interface`](auteur_controlling::controller)
 //! around a [`graph of live processing nodes`](crate::node).
 //!
 //! Individual nodes can be scheduled to form a timeline, an example
@@ -14,7 +14,7 @@
 //!
 //! The service can of course be used for many other applications.
 //!
-//! A companion application (`rtmp_switcher_controller`) is provided as an
+//! A companion application (`auteur_controller`) is provided as an
 //! example client.
 //!
 //! The design of this project is similar to that of [Brave](https://github.com/bbc/brave),
@@ -47,7 +47,7 @@ fn main() -> Result<(), Error> {
     let cfg = Config::from_args();
 
     tracing_log::LogTracer::init().expect("Failed to set logger");
-    let env_filter = tracing_subscriber::EnvFilter::try_from_env("RTMP_SWITCHER_LOG")
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("AUTEUR_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
 
     let (writer, _guard) = {
@@ -59,7 +59,7 @@ fn main() -> Result<(), Error> {
                 Err(anyhow!("Log path is not a directory: {:?}", path))?;
             }
 
-            let file_appender = tracing_appender::rolling::never(&path, "rtmp-switcher.log");
+            let file_appender = tracing_appender::rolling::never(&path, "auteur.log");
             let (writer, guard) = tracing_appender::non_blocking(file_appender);
 
             (writer, guard)

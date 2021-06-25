@@ -2,11 +2,13 @@ import datetime
 import subprocess
 import re
 import uuid
+import os
 
 import time
 
 NOW = datetime.datetime.utcnow()
-EXE = '/home/meh/devel/gst-build/sandbox/rtmp-switcher/target/debug/rtmp-switcher-controller'
+HERE = os.path.dirname(os.path.abspath(__file__))
+EXE = os.path.join(HERE, 'target/debug/auteur-controller')
 SERVER = 'ws://127.0.0.1:8080/ws/control'
 
 def create_source(id_, uri):
@@ -137,7 +139,7 @@ def get_info(id_=None):
 if __name__ == '__main__':
     create_mixer('channel-1', 720, 480, 44100, fallback_image='/home/meh/Pictures/bark.jpg')
     create_rtmp_destination('centricular-output', 'rtmp://learntv-transcoder.eastus.azurecontainer.io/live/centricular-output')
-    create_local_file_destination('local', '/home/meh/devel/gst-build/sandbox/rtmp-switcher/capture')
+    create_local_file_destination('local', os.path.join(HERE, 'capture'))
     start_node('centricular-output')
     start_node('local', later(5), later(20))
     connect('channel-1', 'centricular-output')

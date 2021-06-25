@@ -12,7 +12,7 @@ use anyhow::{anyhow, Error};
 use gst::prelude::*;
 use tracing::{debug, error, instrument, trace};
 
-use rtmp_switcher_controlling::controller::{DestinationFamily, DestinationInfo, NodeInfo, State};
+use auteur_controlling::controller::{DestinationFamily, DestinationInfo, NodeInfo, State};
 
 use crate::node::{
     ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage, NodeManager, NodeStatusMessage,
