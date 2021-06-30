@@ -16,12 +16,11 @@ This project depends on:
 
 * GStreamer (master as of writing)
 
-* gst-plugins-rs (<https://gitlab.freedesktop.org/meh/gst-plugins-rs/-/tree/fallbackswitch-dev> as of
-  writing, will make it to master soon)
+* gst-plugins-rs (master as of writing)
 
 The most convenient testing platform for this PoC is a Linux machine,
 <https://gitlab.freedesktop.org/gstreamer/gst-build>, enter a devenv
-then build <https://gitlab.freedesktop.org/meh/gst-plugins-rs/-/tree/fallbackswitch-dev>
+then build <https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/>
 and export `GST_PLUGIN_PATH`:
 
 ``` shell
