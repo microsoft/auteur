@@ -5,6 +5,10 @@ compositor, with a service exposing a JSON API for creating,
 connecting, inspecting, scheduling and removing GStreamer processing
 nodes (sources, mixers and destinations as of writing).
 
+It can be used for things like linear video feeds that allow hotswapping inputs/sources and compositing
+them based on a schedule (cue time and duration). As well as fail-over to backup content when a source 
+is unavailable.
+
 An example client running commands one at a time is provided
 for exploring that API.
 
