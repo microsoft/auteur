@@ -1,3 +1,5 @@
+![Auteur CI](https://github.com/MathieuDuponchelle/auteur/actions/workflows/CI.yml/badge.svg?branch=main)
+
 # Auteur
 
 The current scope of this project is that of a basic live node

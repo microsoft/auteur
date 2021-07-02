@@ -1,0 +1,44 @@
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+name: CI
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    container:
+      image: mathieudu/gstreamer-auteur:latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - nightly
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          override: true
+          components: clippy
+      - run: cargo clippy -- -D warnings
+      - run: cargo check
+      - name: run tests
+        run: cargo test
+
+  fmt:
+    name: rust fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - run: rustup component add rustfmt
+      - uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
