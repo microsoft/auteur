@@ -164,6 +164,7 @@ impl Source {
 
         src.set_property("uri", &self.uri).unwrap();
         src.set_property("manual-unblock", &true).unwrap();
+        src.set_property("immediate-fallback", &true).unwrap();
 
         let pipeline_clone = pipeline.downgrade();
         let addr = ctx.address();
@@ -699,7 +700,7 @@ mod tests {
 
         tracing::info!("Scheduling for {:?}", cue_time);
 
-        // Start it up immediately
+        // Schedule the source to start later
         start_node("test-source", Some(cue_time), None)
             .await
             .unwrap();
