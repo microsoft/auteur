@@ -14,6 +14,8 @@ is unavailable.
 An example client running commands one at a time is provided
 for exploring that API.
 
+[Read the documentation](https://microsoft.github.io/auteur)
+
 ## Environment
 
 This project depends on:
