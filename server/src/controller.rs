@@ -13,9 +13,7 @@ use actix_web_actors::ws;
 
 use tracing::{debug, error, instrument, trace};
 
-use auteur_controlling::controller::{
-    Command, CommandResult, ControllerMessage, ServerMessage,
-};
+use auteur_controlling::controller::{Command, CommandResult, ControllerMessage, ServerMessage};
 
 /// Actor that represents an application controller.
 #[derive(Debug)]

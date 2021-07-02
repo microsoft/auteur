@@ -188,7 +188,7 @@ pub enum State {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DestinationFamily {
     /// Stream to a RTMP server
-    RTMP {
+    Rtmp {
         /// The URI of the server
         uri: String,
     },

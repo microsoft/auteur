@@ -49,8 +49,6 @@ pub struct Destination {
     audio_appsrc: gst_app::AppSrc,
     /// Optional connection point
     consumer_slot: Option<ConsumerSlot>,
-    /// Statistics timer
-    monitor_handle: Option<SpawnHandle>,
     /// Our state machine
     state_machine: StateMachine,
 }
@@ -132,7 +130,6 @@ impl Destination {
             video_appsrc,
             audio_appsrc,
             consumer_slot: None,
-            monitor_handle: None,
             state_machine: StateMachine::default(),
         }
     }
@@ -142,7 +139,7 @@ impl Destination {
     fn start_rtmp_pipeline(
         &mut self,
         ctx: &mut Context<Self>,
-        uri: &String,
+        uri: &str,
     ) -> Result<StateChangeResult, Error> {
         let vconv = make_element("videoconvert", None)?;
         let timecodestamper = make_element("timecodestamper", None)?;
@@ -249,19 +246,16 @@ impl Destination {
 
         let sink_clone = sink.downgrade();
         let id_clone = self.id.clone();
-        self.monitor_handle = Some(ctx.run_interval(
-            std::time::Duration::from_secs(1),
-            move |_s, _ctx| {
-                if let Some(sink) = sink_clone.upgrade() {
-                    let val = sink.property("stats").unwrap();
-                    let s = val.get::<gst::Structure>().unwrap();
+        ctx.run_interval(std::time::Duration::from_secs(1), move |_s, _ctx| {
+            if let Some(sink) = sink_clone.upgrade() {
+                let val = sink.property("stats").unwrap();
+                let s = val.get::<gst::Structure>().unwrap();
 
-                    trace!(id = %id_clone, "rtmp destination statistics: {}", s.to_string());
-                }
-            },
-        ));
+                trace!(id = %id_clone, "rtmp destination statistics: {}", s.to_string());
+            }
+        });
 
-        let addr = ctx.address().clone();
+        let addr = ctx.address();
         let id = self.id.clone();
         self.pipeline.call_async(move |pipeline| {
             if let Err(err) = pipeline.set_state(gst::State::Playing) {
@@ -308,7 +302,7 @@ impl Destination {
         ])?;
 
         if let Some(max_size_time) = max_size_time {
-            sink.set_property("max-size-time", &(max_size_time as u64) * gst::MSECOND)
+            sink.set_property("max-size-time", (max_size_time as u64) * gst::MSECOND)
                 .unwrap();
             sink.set_property("use-robust-muxing", &true).unwrap();
             let mux = make_element("qtmux", None)?;
@@ -342,7 +336,7 @@ impl Destination {
             debug!("started but not yet connected");
         }
 
-        let addr = ctx.address().clone();
+        let addr = ctx.address();
         let id = self.id.clone();
         self.pipeline.call_async(move |pipeline| {
             if let Err(err) = pipeline.set_state(gst::State::Playing) {
@@ -370,8 +364,8 @@ impl Destination {
 
         if self.state_machine.state == State::Started {
             debug!("destination {} connecting to producers", self.id);
-            video_producer.add_consumer(&self.video_appsrc, &link_id);
-            audio_producer.add_consumer(&self.audio_appsrc, &link_id);
+            video_producer.add_consumer(&self.video_appsrc, link_id);
+            audio_producer.add_consumer(&self.audio_appsrc, link_id);
         }
 
         self.consumer_slot = Some(ConsumerSlot {
@@ -394,7 +388,7 @@ impl Destination {
             } else {
                 let res = Err(anyhow!("invalid slot id {}, current: {}", link_id, slot.id));
                 self.consumer_slot = Some(slot);
-                return res;
+                res
             }
         } else {
             Err(anyhow!("can't disconnect, not connected"))
@@ -470,7 +464,7 @@ impl Schedulable<Self> for Destination {
         match target {
             State::Initial => Ok(StateChangeResult::Skip),
             State::Starting => match self.family.clone() {
-                DestinationFamily::RTMP { uri } => self.start_rtmp_pipeline(ctx, &uri),
+                DestinationFamily::Rtmp { uri } => self.start_rtmp_pipeline(ctx, &uri),
                 DestinationFamily::LocalFile {
                     base_name,
                     max_size_time,

@@ -4,10 +4,7 @@ use std::path::PathBuf;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
-#[structopt(
-    name = "auteur",
-    about = "Manages RTMP channels through a REST API"
-)]
+#[structopt(name = "auteur", about = "Manages RTMP channels through a REST API")]
 pub struct Config {
     /// Port to use.
     #[structopt(short, long, default_value = "8080")]

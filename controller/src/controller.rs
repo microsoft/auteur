@@ -14,9 +14,7 @@ use futures::prelude::*;
 
 use log::{debug, error, info, trace, warn};
 
-use auteur_controlling::controller::{
-    Command, CommandResult, ControllerMessage, ServerMessage,
-};
+use auteur_controlling::controller::{Command, CommandResult, ControllerMessage, ServerMessage};
 
 /// Controller handle.
 #[derive(Debug, Clone)]

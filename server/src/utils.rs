@@ -11,9 +11,9 @@ use gst::prelude::*;
 
 use crate::node::{NodeManager, NodeStatusMessage};
 use anyhow::{anyhow, Error};
+use auteur_controlling::controller::State;
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
-use auteur_controlling::controller::State;
 use tracing::{debug, error, instrument, trace, warn};
 
 /// The interface for transporting media data from one node
@@ -176,17 +176,14 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
                                     atomic::Ordering::SeqCst,
                                     atomic::Ordering::SeqCst,
                                 )
-                                .is_ok()
-                            {
-                                if !requested_keyframe {
-                                    trace!(appsrc = %c.appsrc.name(), "Requesting keyframe for first buffer");
-                                    appsink.send_event(
-                                        gst_video::UpstreamForceKeyUnitEvent::builder()
-                                            .all_headers(true)
-                                            .build(),
-                                    );
-                                    requested_keyframe = true;
-                                }
+                                .is_ok() && !requested_keyframe {
+                                trace!(appsrc = %c.appsrc.name(), "Requesting keyframe for first buffer");
+                                appsink.send_event(
+                                    gst_video::UpstreamForceKeyUnitEvent::builder()
+                                        .all_headers(true)
+                                        .build(),
+                                );
+                                requested_keyframe = true;
                             }
 
                             c.appsrc.clone()
@@ -228,18 +225,15 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
             if let Some(gst::PadProbeData::Event(ref ev)) = info.data {
                 use gst::EventView;
 
-                match ev.view() {
-                    EventView::Latency(ev) => {
-                        if let Some(parent) = pad.parent() {
-                            let latency = ev.latency();
-                            trace!(appsink = %parent.name(), latency = %latency, "Latency updated");
+                if let EventView::Latency(ev) = ev.view() {
+                    if let Some(parent) = pad.parent() {
+                        let latency = ev.latency();
+                        trace!(appsink = %parent.name(), latency = %latency, "Latency updated");
 
-                            let mut consumers = consumers_clone.lock().unwrap();
-                            consumers.current_latency = Some(latency);
-                            consumers.latency_updated = true;
-                        }
+                        let mut consumers = consumers_clone.lock().unwrap();
+                        consumers.current_latency = Some(latency);
+                        consumers.latency_updated = true;
                     }
-                    _ => (),
                 }
             }
             gst::PadProbeReturn::Ok
@@ -368,10 +362,6 @@ impl Handler<WaitForEosMessage> for PipelineManager {
         Box::pin(async move {
             if let Some(eos_receiver) = eos_receiver {
                 let _ = eos_receiver.await;
-
-                ()
-            } else {
-                ()
             }
         })
     }
@@ -654,7 +644,7 @@ where
         end_time: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
         let machine = self.state_machine_mut();
-        let cue_time = cue_time.unwrap_or(get_now());
+        let cue_time = cue_time.unwrap_or_else(get_now);
 
         if let Some(end_time) = end_time {
             if cue_time >= end_time {
@@ -802,7 +792,7 @@ where
         let machine = self.state_machine_mut();
 
         if let Some(cue_time) = new_cue_time {
-            if let Some(end_time) = new_end_time.as_ref().or(machine.end_time.as_ref()) {
+            if let Some(end_time) = new_end_time.as_ref().or_else(|| machine.end_time.as_ref()) {
                 if end_time <= cue_time {
                     return Err(anyhow!("end_time {} <= cue_time {}", end_time, cue_time));
                 }
@@ -810,7 +800,7 @@ where
         }
 
         if let Some(end_time) = new_end_time {
-            if let Some(cue_time) = new_cue_time.as_ref().or(machine.cue_time.as_ref()) {
+            if let Some(cue_time) = new_cue_time.as_ref().or_else(|| machine.cue_time.as_ref()) {
                 if end_time <= cue_time {
                     return Err(anyhow!("end_time {} <= cue_time {}", end_time, cue_time));
                 }
@@ -834,11 +824,9 @@ pub mod tests {
     use crate::node::{CommandMessage, NodeManager, NodeStatusMessage, RegisterListenerMessage};
     use actix::prelude::*;
     use anyhow::{anyhow, Error};
+    use auteur_controlling::controller::{Command, CommandResult, GraphCommand, NodeInfo, State};
     use chrono::{DateTime, Utc};
     use futures::channel::oneshot;
-    use auteur_controlling::controller::{
-        Command, CommandResult, GraphCommand, NodeInfo, State,
-    };
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use tracing::error;

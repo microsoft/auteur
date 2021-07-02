@@ -13,13 +13,13 @@ use crate::utils::StreamProducer;
 use actix::prelude::*;
 use actix::WeakRecipient;
 use anyhow::{anyhow, Error};
-use chrono::{DateTime, Utc};
-use futures::channel::oneshot;
-use futures::prelude::*;
 use auteur_controlling::controller::{
     Command, CommandResult, DestinationCommand, DestinationFamily, GraphCommand, Info,
     MixerCommand, MixerConfig, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
 };
+use chrono::{DateTime, Utc};
+use futures::channel::oneshot;
+use futures::prelude::*;
 use std::collections::HashMap;
 use tracing::{debug, info, instrument, trace};
 use tracing_actix::ActorInstrument;
@@ -352,7 +352,7 @@ impl NodeManager {
             .insert(id.to_string(), Node::Source(source_addr.clone()));
 
         self.producers
-            .insert(id.to_string(), source_addr.recipient().clone());
+            .insert(id.to_string(), source_addr.recipient());
 
         trace!("Created source {}", id);
 
@@ -371,8 +371,7 @@ impl NodeManager {
 
         self.nodes
             .insert(id.to_string(), Node::Destination(addr.clone()));
-        self.consumers
-            .insert(id.to_string(), addr.recipient().clone());
+        self.consumers.insert(id.to_string(), addr.recipient());
 
         trace!("Created destination {}", id);
 
@@ -391,8 +390,7 @@ impl NodeManager {
         self.nodes.insert(id.to_string(), Node::Mixer(addr.clone()));
         self.producers
             .insert(id.to_string(), addr.clone().recipient());
-        self.consumers
-            .insert(id.to_string(), addr.clone().recipient());
+        self.consumers.insert(id.to_string(), addr.recipient());
 
         trace!("Created mixer {}", id);
 
@@ -769,6 +767,7 @@ impl NodeManager {
         id: String,
         recipient: WeakRecipient<NodeStatusMessage>,
     ) -> Result<(), Error> {
+        #[allow(clippy::map_entry)]
         if self.listeners.contains_key(&id) {
             Err(anyhow!("A node already exists with id {}", id))
         } else {
@@ -827,8 +826,9 @@ impl Handler<CommandMessage> for NodeManager {
                 GraphCommand::Remove { id } => Box::pin(actix::fut::ready(self.stop_node(&id))),
                 GraphCommand::GetInfo { id } => self.get_info_future(id.as_ref()),
             },
-            Command::Node(cmd) => match cmd {
-                NodeCommand { id, command } => match command {
+            Command::Node(cmd) => {
+                let NodeCommand { id, command } = cmd;
+                match command {
                     NodeCommands::Source(src_cmd) => self.send_source_command_future(&id, src_cmd),
                     NodeCommands::Destination(dest_cmd) => {
                         self.send_destination_command_future(&id, dest_cmd)
@@ -836,8 +836,8 @@ impl Handler<CommandMessage> for NodeManager {
                     NodeCommands::Mixer(mixer_cmd) => {
                         self.send_mixer_command_future(&id, mixer_cmd)
                     }
-                },
-            },
+                }
+            }
         }
     }
 }

@@ -365,12 +365,12 @@ impl Mixer {
         if base_plate_only {
             if mixing_state.base_plate_timeout.is_none() {
                 mixing_state.base_plate_timeout = pts;
-            } else if !mixing_state.showing_base_plate {
-                if pts - mixing_state.base_plate_timeout > timeout {
-                    debug!("falling back to base plate {:?}", base_plate_pad);
-                    base_plate_pad.set_property("alpha", &1.0f64).unwrap();
-                    mixing_state.showing_base_plate = true;
-                }
+            } else if !mixing_state.showing_base_plate
+                && pts - mixing_state.base_plate_timeout > timeout
+            {
+                debug!("falling back to base plate {:?}", base_plate_pad);
+                base_plate_pad.set_property("alpha", &1.0f64).unwrap();
+                mixing_state.showing_base_plate = true;
             }
         } else {
             if mixing_state.showing_base_plate {
@@ -539,7 +539,7 @@ impl Mixer {
         self.video_capsfilter = Some(vcapsfilter);
         self.audio_capsfilter = Some(aresamplecapsfilter);
 
-        let addr = ctx.address().clone();
+        let addr = ctx.address();
         let id = self.id.clone();
         self.pipeline.call_async(move |pipeline| {
             if let Err(err) = pipeline.set_state(gst::State::Playing) {
@@ -557,7 +557,7 @@ impl Mixer {
     }
     #[instrument(level = "debug", name = "updating slot volume", skip(self), fields(id = %self.id))]
     fn set_slot_volume(&mut self, slot_id: &str, volume: f64) -> Result<(), Error> {
-        if volume < 0. || volume > 10. {
+        if !(0. ..=10.).contains(&volume) {
             return Err(anyhow!("invalid slot volume: {}", volume));
         }
 
@@ -698,8 +698,8 @@ impl Mixer {
         let mut slot = ConsumerSlot {
             video_producer: video_producer.clone(),
             audio_producer: audio_producer.clone(),
-            video_appsrc: video_appsrc.clone(),
-            audio_appsrc: audio_appsrc.clone(),
+            video_appsrc,
+            audio_appsrc,
             audio_bin: None,
             video_bin: None,
             volume: 1.0,
@@ -716,7 +716,7 @@ impl Mixer {
                 &vmixer,
                 &amixer,
                 &self.id,
-                &link_id,
+                link_id,
                 &self.config,
             ) {
                 return Err(err);

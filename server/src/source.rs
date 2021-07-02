@@ -28,9 +28,9 @@ use crate::utils::{
 };
 use actix::prelude::*;
 use anyhow::Error;
+use auteur_controlling::controller::{NodeInfo, SourceInfo, State};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
-use auteur_controlling::controller::{NodeInfo, SourceInfo, State};
 use tracing::{debug, error, instrument, trace};
 
 /// The pipeline and various GStreamer elements that the source
@@ -206,14 +206,14 @@ impl Source {
             }
         });
 
-        let addr_clone = ctx.address().clone();
+        let addr_clone = ctx.address();
         src.connect("notify::status", false, move |_args| {
             let _ = addr_clone.do_send(SourceStatusMessage);
             None
         })
         .unwrap();
 
-        let addr_clone = ctx.address().clone();
+        let addr_clone = ctx.address();
         src.connect("notify::statistics", false, move |_args| {
             let _ = addr_clone.do_send(SourceStatusMessage);
             None
@@ -222,7 +222,7 @@ impl Source {
 
         let src_bin: &gst::Bin = src.downcast_ref().unwrap();
 
-        let addr = ctx.address().clone();
+        let addr = ctx.address();
         src_bin.connect_deep_element_added(move |_src, _bin, element| {
             if element.has_property("primary-health", None) {
                 let _ = addr.do_send(NewSwitchMessage(element.clone()));
@@ -249,7 +249,7 @@ impl Source {
             source_bin: None,
         });
 
-        let addr = ctx.address().clone();
+        let addr = ctx.address();
         let id = self.id.clone();
         pipeline.call_async(move |pipeline| {
             if let Err(err) = pipeline.set_state(gst::State::Playing) {
@@ -315,7 +315,7 @@ impl Source {
     #[instrument(level = "debug", name = "new-fallbackswitch", skip(self, ctx), fields(id = %self.id))]
     fn monitor_switch(&mut self, ctx: &mut Context<Self>, switch: gst::Element) {
         if let Some(ref mut media) = self.media {
-            let addr_clone = ctx.address().clone();
+            let addr_clone = ctx.address();
             switch
                 .connect("notify::primary-health", false, move |_args| {
                     let _ = addr_clone.do_send(SourceStatusMessage);
@@ -323,7 +323,7 @@ impl Source {
                 })
                 .unwrap();
 
-            let addr_clone = ctx.address().clone();
+            let addr_clone = ctx.address();
             switch
                 .connect("notify::fallback-health", false, move |_args| {
                     let _ = addr_clone.do_send(SourceStatusMessage);
@@ -429,13 +429,10 @@ impl Schedulable<Self> for Source {
 
     fn next_time(&self) -> Option<DateTime<Utc>> {
         match self.state_machine.state {
-            State::Initial => {
-                if let Some(cue_time) = self.state_machine.cue_time {
-                    Some(cue_time - chrono::Duration::seconds(10))
-                } else {
-                    None
-                }
-            }
+            State::Initial => self
+                .state_machine
+                .cue_time
+                .map(|cue_time| cue_time - chrono::Duration::seconds(10)),
             State::Starting => self.state_machine.cue_time,
             State::Started => self.state_machine.end_time,
             State::Stopping => None,

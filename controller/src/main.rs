@@ -145,7 +145,7 @@ enum CreateNodeSubCommand {
 #[derive(Clap, Debug)]
 enum CreateDestinationSubCommand {
     /// Create a new RTMP destination
-    RTMP {
+    Rtmp {
         /// Unique identifier for the destination
         id: String,
         /// RTMP URI
@@ -226,10 +226,10 @@ fn main() -> Result<(), Error> {
                         Command::Graph(GraphCommand::CreateSource { id, uri })
                     }
                     CreateNodeSubCommand::Destination { subcmd } => match subcmd {
-                        CreateDestinationSubCommand::RTMP { id, uri } => {
+                        CreateDestinationSubCommand::Rtmp { id, uri } => {
                             Command::Graph(GraphCommand::CreateDestination {
                                 id,
-                                family: DestinationFamily::RTMP { uri },
+                                family: DestinationFamily::Rtmp { uri },
                             })
                         }
                         CreateDestinationSubCommand::LocalFile {

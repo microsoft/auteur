@@ -56,7 +56,7 @@ fn main() -> Result<(), Error> {
                 .map_err(|err| anyhow!("Invalid log path: {}", err.to_string()))?;
 
             if !path.is_dir() {
-                Err(anyhow!("Log path is not a directory: {:?}", path))?;
+                return Err(anyhow!("Log path is not a directory: {:?}", path));
             }
 
             let file_appender = tracing_appender::rolling::never(&path, "auteur.log");
