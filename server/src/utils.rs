@@ -51,7 +51,7 @@ impl StreamProducer {
         consumer.set_property("max-buffers", 0u64).unwrap();
         consumer.set_property("max-bytes", 0u64).unwrap();
         consumer
-            .set_property("max-time", 500 * gst::MSECOND)
+            .set_property("max-time", gst::ClockTime::from_mseconds(500))
             .unwrap();
         consumer.set_property_from_str("leaky-type", "downstream");
 
@@ -165,7 +165,7 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
                                     .is_ok()
                                     || latency_updated
                                 {
-                                    c.appsrc.set_latency(latency, gst::CLOCK_TIME_NONE);
+                                    c.appsrc.set_latency(latency, gst::ClockTime::NONE);
                                 }
                             }
 
@@ -389,8 +389,8 @@ impl Actor for PipelineManager {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.pipeline.use_clock(Some(&gst::SystemClock::obtain()));
-        self.pipeline.set_start_time(gst::CLOCK_TIME_NONE);
-        self.pipeline.set_base_time(gst::ClockTime::from(0));
+        self.pipeline.set_start_time(gst::ClockTime::NONE);
+        self.pipeline.set_base_time(gst::ClockTime::ZERO);
 
         let bus = self.pipeline.bus().expect("Pipeline with no bus");
         let bus_stream = bus.stream();

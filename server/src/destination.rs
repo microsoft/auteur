@@ -178,20 +178,21 @@ impl Destination {
         if venc.has_property("tune", None) {
             venc.set_property_from_str("tune", "zerolatency");
         } else if venc.has_property("zerolatency", None) {
-            venc.set_property("zerolatency", &true).unwrap();
+            venc.set_property("zerolatency", true).unwrap();
         }
 
         if venc.has_property("key-int-max", None) {
-            venc.set_property("key-int-max", &30u32).unwrap();
+            venc.set_property("key-int-max", 30u32).unwrap();
         } else if venc.has_property("gop-size", None) {
-            venc.set_property("gop-size", &30i32).unwrap();
+            venc.set_property("gop-size", 30i32).unwrap();
         }
 
-        vparse.set_property("config-interval", &-1i32).unwrap();
+        vparse.set_property("config-interval", -1i32).unwrap();
         sink.set_property("location", uri).unwrap();
 
-        mux.set_property("streamable", &true).unwrap();
-        mux.set_property("latency", &1000000000u64).unwrap();
+        mux.set_property("streamable", true).unwrap();
+        mux.set_property("latency", gst::ClockTime::from_seconds(1))
+            .unwrap();
 
         mux.set_property(
             "start-time-selection",
@@ -207,7 +208,7 @@ impl Destination {
                 .set_properties(&[
                     ("max-size-buffers", &0u32),
                     ("max-size-bytes", &0u32),
-                    ("max-size-time", &(3 * gst::SECOND)),
+                    ("max-size-time", &gst::ClockTime::from_seconds(3)),
                 ])
                 .unwrap();
         }
@@ -302,18 +303,24 @@ impl Destination {
         ])?;
 
         if let Some(max_size_time) = max_size_time {
-            sink.set_property("max-size-time", (max_size_time as u64) * gst::MSECOND)
-                .unwrap();
-            sink.set_property("use-robust-muxing", &true).unwrap();
+            sink.set_property(
+                "max-size-time",
+                gst::ClockTime::from_mseconds(max_size_time as u64),
+            )
+            .unwrap();
+            sink.set_property("use-robust-muxing", true).unwrap();
             let mux = make_element("qtmux", None)?;
-            mux.set_property("reserved-moov-update-period", &gst::SECOND)
-                .unwrap();
-            sink.set_property("muxer", &mux).unwrap();
+            mux.set_property(
+                "reserved-moov-update-period",
+                gst::ClockTime::from_seconds(1),
+            )
+            .unwrap();
+            sink.set_property("muxer", mux).unwrap();
             let location = base_name.to_owned() + "%05d.mp4";
-            sink.set_property("location", &location).unwrap();
+            sink.set_property("location", location).unwrap();
         } else {
             let location = base_name.to_owned() + ".mp4";
-            sink.set_property("location", &location).unwrap();
+            sink.set_property("location", location).unwrap();
         }
 
         vparse.link_pads(None, &multiqueue, Some("sink_0"))?;

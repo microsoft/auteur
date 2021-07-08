@@ -163,7 +163,7 @@ impl Source {
         pipeline.add(&src)?;
 
         src.set_property("uri", &self.uri).unwrap();
-        src.set_property("manual-unblock", &true).unwrap();
+        src.set_property("manual-unblock", true).unwrap();
 
         let pipeline_clone = pipeline.downgrade();
         let addr = ctx.address();

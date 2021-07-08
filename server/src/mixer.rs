@@ -50,7 +50,7 @@ struct ConsumerSlot {
 #[derive(Debug)]
 pub struct MixingState {
     /// For how long no pad other than our base plate has selected samples
-    base_plate_timeout: gst::ClockTime,
+    base_plate_timeout: Option<gst::ClockTime>,
     /// Whether our base plate is opaque
     showing_base_plate: bool,
 }
@@ -157,10 +157,10 @@ impl Mixer {
             video_mixer: None,
             config,
             mixing_state: Arc::new(Mutex::new(MixingState {
-                base_plate_timeout: gst::CLOCK_TIME_NONE,
+                base_plate_timeout: gst::ClockTime::NONE,
                 showing_base_plate: true,
             })),
-            fallback_timeout: fallback_timeout as u64 * gst::MSECOND,
+            fallback_timeout: gst::ClockTime::from_mseconds(fallback_timeout as u64),
             audio_capsfilter: None,
             video_capsfilter: None,
             base_plate_capsfilter: None,
@@ -199,10 +199,10 @@ impl Mixer {
         vcapsfilter
             .set_property(
                 "caps",
-                &gst::Caps::builder("video/x-raw")
-                    .field("width", &config.width)
-                    .field("height", &config.height)
-                    .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                gst::Caps::builder("video/x-raw")
+                    .field("width", config.width)
+                    .field("height", config.height)
+                    .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
                     .build(),
             )
             .unwrap();
@@ -210,10 +210,10 @@ impl Mixer {
         acapsfilter
             .set_property(
                 "caps",
-                &gst::Caps::builder("audio/x-raw")
-                    .field("channels", &2)
-                    .field("format", &"S16LE")
-                    .field("rate", &96000)
+                gst::Caps::builder("audio/x-raw")
+                    .field("channels", 2)
+                    .field("format", "S16LE")
+                    .field("rate", 96000)
                     .build(),
             )
             .unwrap();
@@ -241,7 +241,7 @@ impl Mixer {
         let amixer_pad = amixer.request_pad_simple("sink_%u").unwrap();
         let vmixer_pad = vmixer.request_pad_simple("sink_%u").unwrap();
 
-        amixer_pad.set_property("volume", &slot.volume).unwrap();
+        amixer_pad.set_property("volume", slot.volume).unwrap();
 
         gst::Element::link_many(&[aappsrc_elem, &aconv, &aresample, &acapsfilter, &aqueue])?;
         gst::Element::link_many(&[vappsrc_elem, &vconv, &vscale, &vcapsfilter, &vqueue])?;
@@ -281,14 +281,14 @@ impl Mixer {
                 let capsfilter = make_element("capsfilter", None)?;
 
                 filesrc.set_property("location", path).unwrap();
-                imagefreeze.set_property("is-live", &true).unwrap();
+                imagefreeze.set_property("is-live", true).unwrap();
                 capsfilter
                     .set_property(
                         "caps",
-                        &gst::Caps::builder("video/x-raw")
-                            .field("width", &self.config.width)
-                            .field("height", &self.config.height)
-                            .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                        gst::Caps::builder("video/x-raw")
+                            .field("width", self.config.width)
+                            .field("height", self.config.height)
+                            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
                             .build(),
                     )
                     .unwrap();
@@ -321,7 +321,7 @@ impl Mixer {
             }
             None => {
                 let vsrc = make_element("videotestsrc", None)?;
-                vsrc.set_property("is-live", &true).unwrap();
+                vsrc.set_property("is-live", true).unwrap();
                 vsrc.set_property_from_str("pattern", "black");
 
                 bin.add(&vsrc)?;
@@ -341,7 +341,7 @@ impl Mixer {
     fn update_mixing_state(
         agg: &gst_base::Aggregator,
         id: &str,
-        pts: gst::ClockTime,
+        pts: Option<gst::ClockTime>,
         mixing_state: &mut MixingState,
         timeout: gst::ClockTime,
     ) {
@@ -363,22 +363,26 @@ impl Mixer {
         }
 
         if base_plate_only {
-            if mixing_state.base_plate_timeout.is_none() {
-                mixing_state.base_plate_timeout = pts;
-            } else if !mixing_state.showing_base_plate
-                && pts - mixing_state.base_plate_timeout > timeout
-            {
-                debug!("falling back to base plate {:?}", base_plate_pad);
-                base_plate_pad.set_property("alpha", &1.0f64).unwrap();
-                mixing_state.showing_base_plate = true;
+            match (mixing_state.base_plate_timeout, pts) {
+                (None, _) => {
+                    mixing_state.base_plate_timeout = pts;
+                }
+                (Some(base_plate_timeout), Some(pts))
+                    if !mixing_state.showing_base_plate && pts - base_plate_timeout > timeout =>
+                {
+                    debug!("falling back to base plate {:?}", base_plate_pad);
+                    base_plate_pad.set_property("alpha", 1.0f64).unwrap();
+                    mixing_state.showing_base_plate = true;
+                }
+                _ => (),
             }
         } else {
             if mixing_state.showing_base_plate {
                 debug!("hiding base plate: {:?}", base_plate_pad);
-                base_plate_pad.set_property("alpha", &0.0f64).unwrap();
+                base_plate_pad.set_property("alpha", 0.0f64).unwrap();
                 mixing_state.showing_base_plate = false;
             }
-            mixing_state.base_plate_timeout = gst::CLOCK_TIME_NONE;
+            mixing_state.base_plate_timeout = gst::ClockTime::NONE;
         }
     }
 
@@ -403,7 +407,7 @@ impl Mixer {
         vmixer
             .set_property(
                 "start-time-selection",
-                &gst_base::AggregatorStartTimeSelection::First,
+                gst_base::AggregatorStartTimeSelection::First,
             )
             .unwrap();
 
@@ -412,24 +416,24 @@ impl Mixer {
         vcapsfilter
             .set_property(
                 "caps",
-                &gst::Caps::builder("video/x-raw")
-                    .field("width", &self.config.width)
-                    .field("height", &self.config.height)
-                    .field("framerate", &gst::Fraction::new(30, 1))
-                    .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
-                    .field("format", &"I420")
-                    .field("colorimetry", &"bt601")
-                    .field("chroma-site", &"jpeg")
-                    .field("interlace-mode", &"progressive")
+                gst::Caps::builder("video/x-raw")
+                    .field("width", self.config.width)
+                    .field("height", self.config.height)
+                    .field("framerate", gst::Fraction::new(30, 1))
+                    .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                    .field("format", "I420")
+                    .field("colorimetry", "bt601")
+                    .field("chroma-site", "jpeg")
+                    .field("interlace-mode", "progressive")
                     .build(),
             )
             .unwrap();
-        asrc.set_property("is-live", &true).unwrap();
-        asrc.set_property("volume", &0.).unwrap();
+        asrc.set_property("is-live", true).unwrap();
+        asrc.set_property("volume", 0.).unwrap();
         amixer
             .set_property(
                 "start-time-selection",
-                &gst_base::AggregatorStartTimeSelection::First,
+                gst_base::AggregatorStartTimeSelection::First,
             )
             .unwrap();
 
@@ -444,10 +448,10 @@ impl Mixer {
         asrccapsfilter
             .set_property(
                 "caps",
-                &gst::Caps::builder("audio/x-raw")
-                    .field("channels", &2)
-                    .field("format", &"S16LE")
-                    .field("rate", &96000)
+                gst::Caps::builder("audio/x-raw")
+                    .field("channels", 2)
+                    .field("format", "S16LE")
+                    .field("rate", 96000)
                     .build(),
             )
             .unwrap();
@@ -455,10 +459,10 @@ impl Mixer {
         acapsfilter
             .set_property(
                 "caps",
-                &gst::Caps::builder("audio/x-raw")
-                    .field("channels", &2)
-                    .field("format", &"S16LE")
-                    .field("rate", &96000)
+                gst::Caps::builder("audio/x-raw")
+                    .field("channels", 2)
+                    .field("format", "S16LE")
+                    .field("rate", 96000)
                     .build(),
             )
             .unwrap();
@@ -466,8 +470,8 @@ impl Mixer {
         aresamplecapsfilter
             .set_property(
                 "caps",
-                &gst::Caps::builder("audio/x-raw")
-                    .field("rate", &self.config.sample_rate)
+                gst::Caps::builder("audio/x-raw")
+                    .field("rate", self.config.sample_rate)
                     .build(),
             )
             .unwrap();
@@ -523,7 +527,7 @@ impl Mixer {
         let id = self.id.clone();
         let timeout = self.fallback_timeout;
 
-        vmixer.set_property("emit-signals", &true).unwrap();
+        vmixer.set_property("emit-signals", true).unwrap();
         vmixer
             .downcast_ref::<gst_base::Aggregator>()
             .unwrap()
@@ -566,7 +570,7 @@ impl Mixer {
 
             if let Some(ref audio_bin) = slot.audio_bin {
                 let mixer_pad = audio_bin.static_pad("src").unwrap().peer().unwrap();
-                mixer_pad.set_property("volume", &volume).unwrap();
+                mixer_pad.set_property("volume", volume).unwrap();
             }
             Ok(())
         } else {
@@ -603,15 +607,15 @@ impl Mixer {
             capsfilter
                 .set_property(
                     "caps",
-                    &gst::Caps::builder("video/x-raw")
-                        .field("width", &self.config.width)
-                        .field("height", &self.config.height)
-                        .field("framerate", &gst::Fraction::new(30, 1))
-                        .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
-                        .field("format", &"I420")
-                        .field("colorimetry", &"bt601")
-                        .field("chroma-site", &"jpeg")
-                        .field("interlace-mode", &"progressive")
+                    gst::Caps::builder("video/x-raw")
+                        .field("width", self.config.width)
+                        .field("height", self.config.height)
+                        .field("framerate", gst::Fraction::new(30, 1))
+                        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                        .field("format", "I420")
+                        .field("colorimetry", "bt601")
+                        .field("chroma-site", "jpeg")
+                        .field("interlace-mode", "progressive")
                         .build(),
                 )
                 .unwrap();
@@ -622,10 +626,10 @@ impl Mixer {
             capsfilter
                 .set_property(
                     "caps",
-                    &gst::Caps::builder("video/x-raw")
-                        .field("width", &self.config.width)
-                        .field("height", &self.config.height)
-                        .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                    gst::Caps::builder("video/x-raw")
+                        .field("width", self.config.width)
+                        .field("height", self.config.height)
+                        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
                         .build(),
                 )
                 .unwrap();
@@ -637,10 +641,10 @@ impl Mixer {
                 capsfilter
                     .set_property(
                         "caps",
-                        &gst::Caps::builder("video/x-raw")
-                            .field("width", &self.config.width)
-                            .field("height", &self.config.height)
-                            .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                        gst::Caps::builder("video/x-raw")
+                            .field("width", self.config.width)
+                            .field("height", self.config.height)
+                            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
                             .build(),
                     )
                     .unwrap();
@@ -652,8 +656,8 @@ impl Mixer {
             capsfilter
                 .set_property(
                     "caps",
-                    &gst::Caps::builder("audio/x-raw")
-                        .field("rate", &self.config.sample_rate)
+                    gst::Caps::builder("audio/x-raw")
+                        .field("rate", self.config.sample_rate)
                         .build(),
                 )
                 .unwrap();
