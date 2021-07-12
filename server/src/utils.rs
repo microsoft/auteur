@@ -555,7 +555,21 @@ pub fn get_now() -> DateTime<Utc> {
         }
     };
 
-    ubase + chrono::Duration::from_std(actix::clock::Instant::now() - abase).unwrap()
+    // This is really quite unfortunate, but Instant::now()
+    // is actually *not* monotonic on certain systems.
+    //
+    // https://github.com/rust-lang/rust/issues/56612 though
+    // closed seems related.
+    let anow = actix::clock::Instant::now();
+
+    let delta = if anow > abase {
+        anow - abase
+    } else {
+        // FIXME: use std::time::Duration::ZERO when stable
+        std::time::Duration::new(0, 0)
+    };
+
+    ubase + chrono::Duration::from_std(delta).unwrap()
 }
 
 /// State machine governing the progression of a [`node`](crate::node) state
