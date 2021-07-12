@@ -252,14 +252,13 @@ impl Source {
 
         let addr = ctx.address();
         let id = self.id.clone();
-        pipeline.call_async(move |pipeline| {
-            if let Err(err) = pipeline.set_state(gst::State::Playing) {
-                let _ = addr.do_send(ErrorMessage(format!(
-                    "Failed to start source {}: {}",
-                    id, err
-                )));
-            }
-        });
+
+        if let Err(err) = pipeline.set_state(gst::State::Playing) {
+            let _ = addr.do_send(ErrorMessage(format!(
+                "Failed to start source {}: {}",
+                id, err
+            )));
+        }
 
         Ok(StateChangeResult::Success)
     }
