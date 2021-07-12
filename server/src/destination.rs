@@ -567,3 +567,42 @@ impl Handler<GetNodeInfoMessage> for Destination {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::tests::*;
+    use tempfile::tempdir;
+    use test_env_log::test;
+
+    #[actix_rt::test]
+    #[test]
+    async fn test_status_after_create() {
+        gst::init().unwrap();
+        let dir = tempdir().unwrap();
+
+        let base_name = format!("{}/video", dir.path().display());
+
+        create_local_destination("test-destination", &base_name, Some(5000))
+            .await
+            .unwrap();
+
+        let info = node_info_unchecked("test-destination").await;
+
+        if let NodeInfo::Destination(dinfo) = info {
+            assert_eq!(
+                dinfo.family,
+                DestinationFamily::LocalFile {
+                    base_name,
+                    max_size_time: Some(5000),
+                }
+            );
+            assert!(dinfo.slot_id.is_none());
+            assert!(dinfo.cue_time.is_none());
+            assert!(dinfo.end_time.is_none());
+            assert_eq!(dinfo.state, State::Initial);
+        } else {
+            panic!("Wrong info type");
+        }
+    }
+}

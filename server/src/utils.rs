@@ -824,7 +824,9 @@ pub mod tests {
     use crate::node::{CommandMessage, NodeManager, NodeStatusMessage, RegisterListenerMessage};
     use actix::prelude::*;
     use anyhow::{anyhow, Error};
-    use auteur_controlling::controller::{Command, CommandResult, GraphCommand, NodeInfo, State};
+    use auteur_controlling::controller::{
+        Command, CommandResult, DestinationFamily, GraphCommand, NodeInfo, State,
+    };
     use chrono::{DateTime, Utc};
     use futures::channel::oneshot;
     use std::collections::VecDeque;
@@ -951,6 +953,33 @@ pub mod tests {
                 command: Command::Graph(GraphCommand::CreateSource {
                     id: id.to_string(),
                     uri: uri.to_string(),
+                }),
+            })
+            .await
+            .unwrap()
+        {
+            CommandResult::Success => Ok(()),
+            CommandResult::Error(err) => Err(anyhow!(err)),
+            CommandResult::Info(_) => unreachable!(),
+        }
+    }
+
+    /// Create a local file destination
+    pub async fn create_local_destination(
+        id: &str,
+        base_name: &str,
+        max_size_time: Option<u32>,
+    ) -> Result<(), Error> {
+        let manager = NodeManager::from_registry();
+
+        match manager
+            .send(CommandMessage {
+                command: Command::Graph(GraphCommand::CreateDestination {
+                    id: id.to_string(),
+                    family: DestinationFamily::LocalFile {
+                        base_name: base_name.to_string(),
+                        max_size_time,
+                    },
                 }),
             })
             .await
