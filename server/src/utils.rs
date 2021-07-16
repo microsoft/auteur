@@ -388,10 +388,6 @@ impl Actor for PipelineManager {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        self.pipeline.use_clock(Some(&gst::SystemClock::obtain()));
-        self.pipeline.set_start_time(gst::CLOCK_TIME_NONE);
-        self.pipeline.set_base_time(gst::ClockTime::from(0));
-
         let bus = self.pipeline.bus().expect("Pipeline with no bus");
         let bus_stream = bus.stream();
         Self::add_stream(bus_stream.map(BusMessage), ctx);
@@ -482,6 +478,10 @@ impl PipelineManager {
     /// Create a new manager
     pub fn new(pipeline: gst::Pipeline, recipient: WeakRecipient<ErrorMessage>, id: &str) -> Self {
         let (eos_sender, eos_receiver) = oneshot::channel::<()>();
+
+        pipeline.use_clock(Some(&gst::SystemClock::obtain()));
+        pipeline.set_start_time(gst::CLOCK_TIME_NONE);
+        pipeline.set_base_time(gst::ClockTime::from(0));
 
         Self {
             pipeline,
