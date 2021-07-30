@@ -136,6 +136,25 @@ def get_info(id_=None):
     result = subprocess.check_output(cmd).decode().strip()
     print (result)
 
+def add_control_point(controller_id, controllee_id, prop, time, value, interpolate=True):
+    value = str(value)
+
+    if interpolate:
+        mode = 'interpolate'
+    else:
+        mode = 'set'
+
+    cmd = [EXE, SERVER, 'node', 'add-control-point', controller_id, controllee_id, prop, time.isoformat() + 'Z', '--', value, mode]
+
+    result = subprocess.check_output(cmd).decode().strip()
+    print (result)
+
+def remove_control_point(controller_id, controllee_id, prop):
+    cmd = [EXE, SERVER, 'node', 'remove-control-point', controller_id, controllee_id, prop]
+
+    result = subprocess.check_output(cmd).decode().strip()
+    print (result)
+
 if __name__ == '__main__':
     create_mixer('channel-1', 720, 480, 44100, fallback_image='/home/meh/Pictures/bark.jpg')
     create_rtmp_destination('centricular-output', 'rtmp://learntv-transcoder.eastus.azurecontainer.io/live/centricular-output')

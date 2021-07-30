@@ -9,7 +9,8 @@ mod controller;
 use controller::Controller;
 
 use auteur_controlling::controller::{
-    Command, DestinationFamily, GraphCommand, MixerCommand, MixerConfig, NodeCommand, NodeCommands,
+    Command, ControlMode, ControlPoint, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
+    NodeCommand, NodeCommands,
 };
 
 #[derive(Clap, Debug)]
@@ -49,6 +50,30 @@ enum SubCommand {
         #[clap(subcommand)]
         subcmd: MixerSubCommand,
     },
+}
+
+#[derive(Clap, Debug)]
+enum ArgControlMode {
+    Interpolate,
+    Set,
+}
+
+impl From<ArgControlMode> for ControlMode {
+    fn from(other: ArgControlMode) -> ControlMode {
+        match other {
+            ArgControlMode::Interpolate => ControlMode::Interpolate,
+            ArgControlMode::Set => ControlMode::Set,
+        }
+    }
+}
+
+impl From<ControlMode> for ArgControlMode {
+    fn from(other: ControlMode) -> ArgControlMode {
+        match other {
+            ControlMode::Interpolate => ArgControlMode::Interpolate,
+            ControlMode::Set => ArgControlMode::Set,
+        }
+    }
 }
 
 /// Create and connect nodes
@@ -104,6 +129,31 @@ enum NodeSubCommand {
     GetInfo {
         /// The id of the node, if not specified, all nodes
         id: Option<String>,
+    },
+    /// Control properties over time for a node or slot
+    AddControlPoint {
+        /// The id of the control point
+        id: String,
+        /// The id of the controllee
+        controllee_id: String,
+        /// Name of the controlled property
+        property: String,
+        /// Time of the control point
+        time: DateTime<Utc>,
+        /// Desired value of the controlled property
+        value: serde_json::Value,
+        /// How to apply the control point
+        #[clap(arg_enum)]
+        mode: ArgControlMode,
+    },
+    /// Remove a previously set control point
+    RemoveControlPoint {
+        /// The id of the control point
+        id: String,
+        /// The id of the controllee
+        controllee_id: String,
+        /// Name of the controlled property
+        property: String,
     },
 }
 
@@ -294,6 +344,32 @@ fn main() -> Result<(), Error> {
                 }),
                 NodeSubCommand::Remove { id } => Command::Graph(GraphCommand::Remove { id }),
                 NodeSubCommand::GetInfo { id } => Command::Graph(GraphCommand::GetInfo { id }),
+                NodeSubCommand::AddControlPoint {
+                    id,
+                    controllee_id,
+                    property,
+                    time,
+                    value,
+                    mode,
+                } => Command::Graph(GraphCommand::AddControlPoint {
+                    controllee_id,
+                    property,
+                    control_point: ControlPoint {
+                        id,
+                        time,
+                        value,
+                        mode: mode.into(),
+                    },
+                }),
+                NodeSubCommand::RemoveControlPoint {
+                    id,
+                    controllee_id,
+                    property,
+                } => Command::Graph(GraphCommand::RemoveControlPoint {
+                    id,
+                    controllee_id,
+                    property,
+                }),
             },
             SubCommand::Source { subcmd } => match subcmd {},
             SubCommand::Destination { subcmd } => match subcmd {},

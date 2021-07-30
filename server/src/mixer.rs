@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, error, instrument, trace};
 
 use auteur_controlling::controller::{
-    MixerCommand, MixerConfig, MixerInfo, MixerSlotInfo, NodeInfo, State,
+    ControlPoint, MixerCommand, MixerConfig, MixerInfo, MixerSlotInfo, NodeInfo, State,
 };
 
 use crate::node::{
@@ -20,8 +20,8 @@ use crate::node::{
     NodeStatusMessage, ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
-    make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
-    StopManagerMessage, StreamProducer,
+    get_now, make_element, ErrorMessage, PipelineManager, PropertyController, Schedulable,
+    StateChangeResult, StateMachine, StopManagerMessage, StreamProducer,
 };
 
 const DEFAULT_FALLBACK_TIMEOUT: u32 = 500;
@@ -44,15 +44,32 @@ struct ConsumerSlot {
     volume: f64,
     /// Used to reconfigure the geometry of the input video stream
     video_capsfilter: Option<gst::Element>,
+    /// The video mixer pad
+    video_pad: Option<gst::Pad>,
+    /// The audio mixer pad
+    audio_pad: Option<gst::Pad>,
 }
 
 /// Used from our `compositor::samples_selected` callback
 #[derive(Debug)]
-pub struct MixingState {
+pub struct VideoMixingState {
     /// For how long no pad other than our base plate has selected samples
     base_plate_timeout: gst::ClockTime,
     /// Whether our base plate is opaque
     showing_base_plate: bool,
+    /// Our slot controllers
+    controllers: Option<HashMap<String, PropertyController>>,
+    /// The last observed PTS, for interpolating
+    last_pts: gst::ClockTime,
+}
+
+/// Used from our `audiomixer::samples_selected` callback
+#[derive(Debug)]
+pub struct AudioMixingState {
+    /// Our slot controllers
+    controllers: Option<HashMap<String, PropertyController>>,
+    /// The last observed PTS, for interpolating
+    last_pts: gst::ClockTime,
 }
 
 /// The Mixer actor
@@ -69,14 +86,16 @@ pub struct Mixer {
     audio_producer: StreamProducer,
     /// Input connection points
     consumer_slots: HashMap<String, ConsumerSlot>,
-    /// `compositor`
-    audio_mixer: Option<gst::Element>,
     /// `audiomixer`
+    audio_mixer: Option<gst::Element>,
+    /// `compositor`
     video_mixer: Option<gst::Element>,
     /// Mixing geometry and format
     config: MixerConfig,
-    /// Used for showing and hiding the base plate
-    mixing_state: Arc<Mutex<MixingState>>,
+    /// Used for showing and hiding the base plate, and updating slot video controllers
+    video_mixing_state: Arc<Mutex<VideoMixingState>>,
+    /// Used for updating slot audio controllers
+    audio_mixing_state: Arc<Mutex<AudioMixingState>>,
     /// Optional timeout for showing the base plate
     fallback_timeout: gst::ClockTime,
     /// For controlling the output sample rate
@@ -156,9 +175,15 @@ impl Mixer {
             audio_mixer: None,
             video_mixer: None,
             config,
-            mixing_state: Arc::new(Mutex::new(MixingState {
+            video_mixing_state: Arc::new(Mutex::new(VideoMixingState {
                 base_plate_timeout: gst::CLOCK_TIME_NONE,
                 showing_base_plate: true,
+                controllers: Some(HashMap::new()),
+                last_pts: gst::CLOCK_TIME_NONE,
+            })),
+            audio_mixing_state: Arc::new(Mutex::new(AudioMixingState {
+                controllers: Some(HashMap::new()),
+                last_pts: gst::CLOCK_TIME_NONE,
             })),
             fallback_timeout: fallback_timeout as u64 * gst::MSECOND,
             audio_capsfilter: None,
@@ -254,6 +279,8 @@ impl Mixer {
 
         slot.audio_bin = Some(audio_bin);
         slot.video_bin = Some(video_bin);
+        slot.audio_pad = Some(amixer_pad);
+        slot.video_pad = Some(vmixer_pad);
         slot.video_capsfilter = Some(vcapsfilter);
 
         slot.video_producer.add_consumer(&slot.video_appsrc, id);
@@ -335,14 +362,64 @@ impl Mixer {
         Ok(bin.upcast())
     }
 
-    /// Show or hide our base plate. Will be used in the future for interpolating
-    /// properties of mixer pads
-    #[instrument(name = "Updating mixing state", level = "trace")]
-    fn update_mixing_state(
+    /// Update slot controllers
+    #[instrument(
+        name = "Updating audio mixing state",
+        level = "trace",
+        skip(mixing_state)
+    )]
+    fn update_audio_mixing_state(
         agg: &gst_base::Aggregator,
         id: &str,
         pts: gst::ClockTime,
-        mixing_state: &mut MixingState,
+        mixing_state: &mut AudioMixingState,
+    ) {
+        let duration = if mixing_state.last_pts.is_none() {
+            gst::CLOCK_TIME_NONE
+        } else {
+            pts - mixing_state.last_pts
+        };
+
+        mixing_state.controllers = Some(Mixer::synchronize_controllers(
+            agg,
+            id,
+            duration,
+            &mut mixing_state.controllers.take().unwrap(),
+        ));
+
+        mixing_state.last_pts = pts;
+    }
+
+    #[instrument(name = "synchronizing controllers", level = "trace", skip(controllers))]
+    fn synchronize_controllers(
+        agg: &gst_base::Aggregator,
+        id: &str,
+        duration: gst::ClockTime,
+        controllers: &mut HashMap<String, PropertyController>,
+    ) -> HashMap<String, PropertyController> {
+        let now = get_now();
+        let mut updated_controllers = HashMap::new();
+
+        for (id, mut controller) in controllers.drain() {
+            if !controller.synchronize(now, duration) {
+                updated_controllers.insert(id, controller);
+            }
+        }
+
+        updated_controllers
+    }
+
+    /// Show or hide our base plate, update slot controllers
+    #[instrument(
+        name = "Updating video mixing state",
+        level = "trace",
+        skip(mixing_state)
+    )]
+    fn update_video_mixing_state(
+        agg: &gst_base::Aggregator,
+        id: &str,
+        pts: gst::ClockTime,
+        mixing_state: &mut VideoMixingState,
         timeout: gst::ClockTime,
     ) {
         let mut base_plate_only = true;
@@ -380,6 +457,21 @@ impl Mixer {
             }
             mixing_state.base_plate_timeout = gst::CLOCK_TIME_NONE;
         }
+
+        let duration = if mixing_state.last_pts.is_none() {
+            gst::CLOCK_TIME_NONE
+        } else {
+            pts - mixing_state.last_pts
+        };
+
+        mixing_state.controllers = Some(Mixer::synchronize_controllers(
+            agg,
+            id,
+            duration,
+            &mut mixing_state.controllers.take().unwrap(),
+        ));
+
+        mixing_state.last_pts = pts;
     }
 
     /// Start our pipeline when cue_time is reached
@@ -519,7 +611,7 @@ impl Mixer {
             )?;
         }
 
-        let mixing_state = self.mixing_state.clone();
+        let video_mixing_state = self.video_mixing_state.clone();
         let id = self.id.clone();
         let timeout = self.fallback_timeout;
 
@@ -529,8 +621,22 @@ impl Mixer {
             .unwrap()
             .connect_samples_selected(
                 move |agg: &gst_base::Aggregator, _segment, pts, _dts, _duration, _info| {
-                    let mut mixing_state = mixing_state.lock().unwrap();
-                    Mixer::update_mixing_state(agg, &id, pts, &mut *mixing_state, timeout);
+                    let mut mixing_state = video_mixing_state.lock().unwrap();
+                    Mixer::update_video_mixing_state(agg, &id, pts, &mut *mixing_state, timeout);
+                },
+            );
+
+        let audio_mixing_state = self.audio_mixing_state.clone();
+        let id = self.id.clone();
+
+        amixer.set_property("emit-signals", &true).unwrap();
+        amixer
+            .downcast_ref::<gst_base::Aggregator>()
+            .unwrap()
+            .connect_samples_selected(
+                move |agg: &gst_base::Aggregator, _segment, pts, _dts, _duration, _info| {
+                    let mut mixing_state = audio_mixing_state.lock().unwrap();
+                    Mixer::update_audio_mixing_state(agg, &id, pts, &mut *mixing_state);
                 },
             );
 
@@ -555,6 +661,7 @@ impl Mixer {
 
         Ok(StateChangeResult::Success)
     }
+
     #[instrument(level = "debug", name = "updating slot volume", skip(self), fields(id = %self.id))]
     fn set_slot_volume(&mut self, slot_id: &str, volume: f64) -> Result<(), Error> {
         if !(0. ..=10.).contains(&volume) {
@@ -704,6 +811,8 @@ impl Mixer {
             video_bin: None,
             volume: 1.0,
             video_capsfilter: None,
+            video_pad: None,
+            audio_pad: None,
         };
 
         if self.state_machine.state == State::Started {
@@ -765,6 +874,143 @@ impl Mixer {
         }
     }
 
+    /// Implement AddControlPoint command for slots
+    #[instrument(level = "debug", name = "controlling-slot", skip(self), fields(id = %self.id))]
+    fn add_slot_control_point(
+        &mut self,
+        slot_id: &str,
+        property: &str,
+        point: ControlPoint,
+    ) -> Result<(), Error> {
+        if self.state_machine.state != State::Started {
+            return Err(anyhow!(
+                "Slot properties can only be controlled on a running mixer"
+            ));
+        }
+
+        let split: Vec<&str> = property.splitn(2, "::").collect();
+
+        let (is_video, property) = match split.len() {
+            2 => match split[0] {
+                "video" => (true, split[1]),
+                "audio" => (false, split[1]),
+                _ => {
+                    return Err(anyhow!(
+                        "Slot controller property media type must be one of {audio, video}"
+                    ));
+                }
+            },
+            _ => {
+                return Err(anyhow!(
+                    "Slot controller property name must be in form media-type::property-name"
+                ));
+            }
+        };
+
+        if let Some(slot) = self.consumer_slots.get(slot_id) {
+            let pad = if is_video {
+                slot.video_pad.as_ref().unwrap().clone()
+            } else {
+                slot.audio_pad.as_ref().unwrap().clone()
+            };
+
+            debug!(slot_id = %slot_id, pad_name = %pad.name(), property = %property, "Upserting controller");
+
+            PropertyController::validate(property, pad.upcast_ref(), &point)?;
+
+            let id = slot_id.to_owned() + property;
+
+            if is_video {
+                let mut mixing_state = self.video_mixing_state.lock().unwrap();
+
+                mixing_state
+                    .controllers
+                    .as_mut()
+                    .unwrap()
+                    .entry(id)
+                    .or_insert_with(|| PropertyController::new(slot_id, pad.upcast(), property))
+                    .push_control_point(point);
+            } else {
+                let mut mixing_state = self.audio_mixing_state.lock().unwrap();
+
+                mixing_state
+                    .controllers
+                    .as_mut()
+                    .unwrap()
+                    .entry(id)
+                    .or_insert_with(|| PropertyController::new(slot_id, pad.upcast(), property))
+                    .push_control_point(point);
+            }
+
+            Ok(())
+        } else {
+            Err(anyhow!("mixer {} has no slot with id {}", self.id, slot_id))
+        }
+    }
+
+    /// Implement RemoveControlPoint command for slots
+    #[instrument(level = "debug", name = "removing control point", skip(self), fields(id = %self.id))]
+    fn remove_slot_control_point(&mut self, controller_id: &str, slot_id: &str, property: &str) {
+        let split: Vec<&str> = property.splitn(2, "::").collect();
+
+        let (is_video, property) = match split.len() {
+            2 => match split[0] {
+                "video" => (true, split[1]),
+                "audio" => (false, split[1]),
+                _ => {
+                    return;
+                }
+            },
+            _ => {
+                return;
+            }
+        };
+
+        let id = slot_id.to_owned() + property;
+
+        if is_video {
+            let mut mixing_state = self.video_mixing_state.lock().unwrap();
+
+            if let Some(controller) = mixing_state.controllers.as_mut().unwrap().get_mut(&id) {
+                controller.remove_control_point(controller_id);
+            }
+        } else {
+            let mut mixing_state = self.audio_mixing_state.lock().unwrap();
+
+            if let Some(controller) = mixing_state.controllers.as_mut().unwrap().get_mut(&id) {
+                controller.remove_control_point(controller_id);
+            }
+        }
+    }
+
+    fn slot_control_points(&self) -> HashMap<String, HashMap<String, Vec<ControlPoint>>> {
+        let mut ret = HashMap::new();
+
+        let mixing_state = self.video_mixing_state.lock().unwrap();
+
+        for controller in mixing_state.controllers.as_ref().unwrap().values() {
+            ret.entry(controller.controllee_id.clone())
+                .or_insert_with(HashMap::new)
+                .insert(
+                    "video::".to_owned() + &controller.propname,
+                    controller.control_points(),
+                );
+        }
+
+        let mixing_state = self.audio_mixing_state.lock().unwrap();
+
+        for controller in mixing_state.controllers.as_ref().unwrap().values() {
+            ret.entry(controller.controllee_id.clone())
+                .or_insert_with(HashMap::new)
+                .insert(
+                    "audio::".to_owned() + &controller.propname,
+                    controller.control_points(),
+                );
+        }
+
+        ret
+    }
+
     #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
     fn stop(&mut self, ctx: &mut Context<Self>) {
         self.stop_schedule(ctx);
@@ -815,6 +1061,19 @@ impl Handler<ConsumerMessage> for Mixer {
                 audio_producer,
             } => MessageResult(self.connect(&link_id, &video_producer, &audio_producer)),
             ConsumerMessage::Disconnect { slot_id } => MessageResult(self.disconnect(&slot_id)),
+            ConsumerMessage::AddControlPoint {
+                slot_id,
+                property,
+                control_point,
+            } => MessageResult(self.add_slot_control_point(&slot_id, &property, control_point)),
+            ConsumerMessage::RemoveControlPoint {
+                controller_id,
+                slot_id,
+                property,
+            } => {
+                self.remove_slot_control_point(&controller_id, &slot_id, &property);
+                MessageResult(Ok(()))
+            }
         }
     }
 }
@@ -917,6 +1176,7 @@ impl Handler<GetNodeInfoMessage> for Mixer {
             cue_time: self.state_machine.cue_time,
             end_time: self.state_machine.end_time,
             state: self.state_machine.state,
+            slot_control_points: self.slot_control_points(),
         }))
     }
 }
