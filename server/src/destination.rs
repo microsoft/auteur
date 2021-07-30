@@ -492,6 +492,12 @@ impl Handler<ConsumerMessage> for Destination {
                 audio_producer,
             } => MessageResult(self.connect(&link_id, &video_producer, &audio_producer)),
             ConsumerMessage::Disconnect { slot_id } => MessageResult(self.disconnect(&slot_id)),
+            ConsumerMessage::AddControlPoint { .. } => {
+                MessageResult(Err(anyhow!("destination slot cannot be controlled")))
+            }
+            ConsumerMessage::RemoveControlPoint { .. } => {
+                MessageResult(Err(anyhow!("destination slot cannot be controlled")))
+            }
         }
     }
 }

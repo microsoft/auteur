@@ -14,8 +14,8 @@ use actix::prelude::*;
 use actix::WeakRecipient;
 use anyhow::{anyhow, Error};
 use auteur_controlling::controller::{
-    Command, CommandResult, DestinationCommand, DestinationFamily, GraphCommand, Info,
-    MixerCommand, MixerConfig, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
+    Command, CommandResult, ControlPoint, DestinationCommand, DestinationFamily, GraphCommand,
+    Info, MixerCommand, MixerConfig, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
 };
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
@@ -123,7 +123,8 @@ impl Message for GetProducerMessage {
 
 /// Sent from [`NodeManager`] to any consumer node in order to
 /// let them connect and disconnect from
-/// [`stream producers`](crate::utils::StreamProducer)
+/// [`stream producers`](crate::utils::StreamProducer), and to
+/// control properties on individual slots
 pub enum ConsumerMessage {
     /// Lets the consumer perform a connection, it should store the
     /// slot id for latter disconnection, and potentially future
@@ -141,6 +142,24 @@ pub enum ConsumerMessage {
     Disconnect {
         /// The id of the slot to disconnect
         slot_id: String,
+    },
+    /// Lets the consumer put a property under control
+    AddControlPoint {
+        /// The id of the slot to control
+        slot_id: String,
+        /// The name of the property to control
+        property: String,
+        /// The control point
+        control_point: ControlPoint,
+    },
+    /// Instructs the consumer to remove a control point
+    RemoveControlPoint {
+        /// The id of the control point
+        controller_id: String,
+        /// The id of the controlled slot
+        slot_id: String,
+        /// The name of the controlled property
+        property: String,
     },
 }
 
@@ -762,6 +781,73 @@ impl NodeManager {
         )
     }
 
+    /// Add a control point for a property and keep track of the controllee
+    #[instrument(level = "trace", name = "control-property-command", skip(self))]
+    fn control_property_future(
+        &mut self,
+        controllee_id: String,
+        property: String,
+        control_point: ControlPoint,
+    ) -> ResponseActFuture<Self, CommandResult> {
+        if let Some(consumer) = self.links.get(&controllee_id) {
+            let consumer = consumer.clone();
+            Box::pin(
+                {
+                    async move {
+                        consumer
+                            .send(ConsumerMessage::AddControlPoint {
+                                slot_id: controllee_id.to_string(),
+                                property: property.to_string(),
+                                control_point,
+                            })
+                            .in_current_span()
+                            .await
+                    }
+                    .into_actor(self)
+                    .then(move |res, _slf, _ctx| {
+                        actix::fut::ready(match res {
+                            Ok(res) => match res {
+                                Ok(_) => CommandResult::Success,
+                                Err(err) => CommandResult::Error(format!("{}", err)),
+                            },
+                            Err(err) => {
+                                CommandResult::Error(format!("Internal server error {}", err))
+                            }
+                        })
+                    })
+                }
+                .in_current_actor_span(),
+            )
+        } else {
+            Box::pin({
+                actix::fut::ready(CommandResult::Error(format!(
+                    "No node or slot with id {}",
+                    controllee_id
+                )))
+            })
+        }
+    }
+
+    /// Remove a control point by id
+    #[instrument(level = "trace", name = "remove-control-point-command", skip(self))]
+    fn remove_control_point(
+        &mut self,
+        id: &str,
+        controllee_id: &str,
+        property: &str,
+    ) -> CommandResult {
+        if let Some(consumer) = self.links.get(controllee_id) {
+            let _ = consumer.do_send(ConsumerMessage::RemoveControlPoint {
+                controller_id: id.to_string(),
+                slot_id: controllee_id.to_string(),
+                property: property.to_string(),
+            });
+            CommandResult::Success
+        } else {
+            CommandResult::Error(format!("no node or slot with id {}", controllee_id))
+        }
+    }
+
     fn add_listener(
         &mut self,
         id: String,
@@ -825,6 +911,20 @@ impl Handler<CommandMessage> for NodeManager {
                 } => self.send_schedule_command_future(&id, cue_time, end_time),
                 GraphCommand::Remove { id } => Box::pin(actix::fut::ready(self.stop_node(&id))),
                 GraphCommand::GetInfo { id } => self.get_info_future(id.as_ref()),
+                GraphCommand::AddControlPoint {
+                    controllee_id,
+                    property,
+                    control_point,
+                } => self.control_property_future(controllee_id, property, control_point),
+                GraphCommand::RemoveControlPoint {
+                    id,
+                    controllee_id,
+                    property,
+                } => Box::pin(actix::fut::ready(self.remove_control_point(
+                    &id,
+                    &controllee_id,
+                    &property,
+                ))),
             },
             Command::Node(cmd) => {
                 let NodeCommand { id, command } = cmd;

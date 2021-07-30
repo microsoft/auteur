@@ -5,6 +5,7 @@
 use chrono::offset::Utc;
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 /// Commands to execute on a source
@@ -79,6 +80,43 @@ pub struct MixerConfig {
     pub fallback_timeout: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+/// Defines how a property should be controlled
+pub enum ControlMode {
+    /// The value should be set once once the desired time has been reached
+    Set,
+    /// The value should be interpolated to be reached upon the desired time
+    Interpolate,
+}
+
+/// A property control point
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub struct ControlPoint {
+    /// The identifier of the control point, unique per property
+    /// per node / slot
+    pub id: String,
+    /// When the value will be reached
+    pub time: DateTime<Utc>,
+    /// The value that will be reached
+    pub value: serde_json::Value,
+    /// How the value will be reached
+    pub mode: ControlMode,
+}
+
+impl Ord for ControlPoint {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.time.cmp(&other.time)
+    }
+}
+
+impl PartialOrd for ControlPoint {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Generic commands for creating and removing nodes, managing connections
 /// and rescheduling
 #[derive(Debug, Serialize, Deserialize)]
@@ -147,6 +185,24 @@ pub enum GraphCommand {
         /// The id of an existing node, or None, in which case the info
         /// of all nodes in the system will be gathered
         id: Option<String>,
+    },
+    /// Control a property on a node or slot
+    AddControlPoint {
+        /// Identifier of an existing node or slot
+        controllee_id: String,
+        /// Name of the controlled property
+        property: String,
+        /// The control point that should be added
+        control_point: ControlPoint,
+    },
+    /// Remove a previously-created control point
+    RemoveControlPoint {
+        /// Unique identifier of the control point
+        id: String,
+        /// Identifier of an existing node or slot
+        controllee_id: String,
+        /// Name of the controlled property
+        property: String,
     },
 }
 
@@ -265,6 +321,8 @@ pub struct MixerInfo {
     pub end_time: Option<DateTime<Utc>>,
     /// The state of the mixer
     pub state: State,
+    /// All controllers active on the mixer's input slots
+    pub slot_control_points: HashMap<String, HashMap<String, Vec<ControlPoint>>>,
 }
 
 /// Info variants
