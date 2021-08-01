@@ -509,7 +509,7 @@ impl Mixer {
                     .field("height", &self.config.height)
                     .field("framerate", &gst::Fraction::new(30, 1))
                     .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
-                    .field("format", &"I420")
+                    .field("format", &"AYUV")
                     .field("colorimetry", &"bt601")
                     .field("chroma-site", &"jpeg")
                     .field("interlace-mode", &"progressive")
