@@ -8,7 +8,7 @@ import time
 
 NOW = datetime.datetime.utcnow()
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXE = os.path.join(HERE, 'target/debug/auteur-controller')
+EXE = os.path.join(HERE, '../target/debug/auteur-controller')
 SERVER = 'ws://127.0.0.1:8080/ws/control'
 
 def create_source(id_, uri):

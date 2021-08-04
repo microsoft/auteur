@@ -65,8 +65,8 @@ cargo run --bin auteur-controller -- help
 You can also find the API definition in `common/src/controller.rs`.
 
 In addition, a simple wrapper script around the controller can
-be found in `node_schedule.py`, alongside other scripts that leverage
-it to demonstrate other features (eg `crossfade.py`)
+be found in `scripts/node_schedule.py`, alongside other scripts that leverage
+it to demonstrate other features (eg `scripts/crossfade.py`)
 
 ## Contributing
 
