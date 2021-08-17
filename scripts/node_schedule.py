@@ -127,13 +127,6 @@ def schedule_source(uri, src_id, dst_id, cue_time=None, end_time=None, slot_conf
     start_node(src_id, cue_time, end_time)
     return link_id
 
-def set_mixer_slot_volume(id_, slot_id, volume):
-    cmd = [EXE, SERVER, 'mixer', 'set-slot-volume', id_, slot_id, str(volume)]
-
-    result = subprocess.check_output(cmd).decode().strip()
-
-    print (result)
-
 def later(delay):
     return NOW + datetime.timedelta(seconds=delay)
 

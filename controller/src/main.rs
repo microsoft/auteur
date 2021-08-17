@@ -262,15 +262,6 @@ enum MixerSubCommand {
         #[clap(long)]
         sample_rate: Option<i32>,
     },
-    /// Set volume of an input slot
-    SetSlotVolume {
-        /// The id of an existing mixer
-        id: String,
-        /// The id of an existing slot
-        slot_id: String,
-        /// The new volume, 0-10, default 1
-        volume: f64,
-    },
 }
 
 /// Client application entry point
@@ -413,14 +404,6 @@ fn main() -> Result<(), Error> {
                         height,
                         sample_rate,
                     }),
-                }),
-                MixerSubCommand::SetSlotVolume {
-                    id,
-                    slot_id,
-                    volume,
-                } => Command::Node(NodeCommand {
-                    id,
-                    command: NodeCommands::Mixer(MixerCommand::SetSlotVolume { slot_id, volume }),
                 }),
             },
         };
