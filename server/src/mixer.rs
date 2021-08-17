@@ -45,9 +45,9 @@ struct ConsumerSlot {
     /// Used to reconfigure the geometry of the input video stream
     video_capsfilter: Option<gst::Element>,
     /// The video mixer pad
-    video_pad: Option<gst::Pad>,
+    video_pad: gst::Pad,
     /// The audio mixer pad
-    audio_pad: Option<gst::Pad>,
+    audio_pad: gst::Pad,
 }
 
 /// Used from our `compositor::samples_selected` callback
@@ -87,9 +87,9 @@ pub struct Mixer {
     /// Input connection points
     consumer_slots: HashMap<String, ConsumerSlot>,
     /// `audiomixer`
-    audio_mixer: Option<gst::Element>,
+    audio_mixer: gst::Element,
     /// `compositor`
-    video_mixer: Option<gst::Element>,
+    video_mixer: gst::Element,
     /// Mixing geometry and format
     config: MixerConfig,
     /// Used for showing and hiding the base plate, and updating slot video controllers
@@ -159,6 +159,9 @@ impl Mixer {
                 .downcast::<gst_app::AppSink>()
                 .unwrap();
 
+        let audio_mixer = make_element("audiomixer", Some("audiomixer")).unwrap();
+        let video_mixer = make_element("compositor", Some("compositor")).unwrap();
+
         pipeline
             .add_many(&[&audio_appsink, &video_appsink])
             .unwrap();
@@ -172,8 +175,8 @@ impl Mixer {
             audio_producer: StreamProducer::from(&audio_appsink),
             video_producer: StreamProducer::from(&video_appsink),
             consumer_slots: HashMap::new(),
-            audio_mixer: None,
-            video_mixer: None,
+            audio_mixer,
+            video_mixer,
             config,
             video_mixing_state: Arc::new(Mutex::new(VideoMixingState {
                 base_plate_timeout: gst::CLOCK_TIME_NONE,
@@ -193,17 +196,28 @@ impl Mixer {
         }
     }
 
+    fn parse_slot_config_key(property: &str) -> Result<(bool, &str), Error> {
+        let split: Vec<&str> = property.splitn(2, "::").collect();
+
+        match split.len() {
+            2 => match split[0] {
+                "video" => Ok((true, split[1])),
+                "audio" => Ok((false, split[1])),
+                _ => Err(anyhow!(
+                    "Slot controller property media type must be one of {audio, video}"
+                )),
+            },
+            _ => Err(anyhow!(
+                "Slot controller property name must be in form media-type::property-name"
+            )),
+        }
+    }
+
     /// Connect an input slot to `compositor` and `audiomixer`
-    #[instrument(
-        level = "debug",
-        name = "connecting",
-        skip(pipeline, slot, vmixer, amixer)
-    )]
+    #[instrument(level = "debug", name = "connecting", skip(pipeline, slot))]
     fn connect_slot(
         pipeline: &gst::Pipeline,
         slot: &mut ConsumerSlot,
-        vmixer: &gst::Element,
-        amixer: &gst::Element,
         mixer_id: &str,
         id: &str,
         config: &MixerConfig,
@@ -263,24 +277,19 @@ impl Mixer {
             gst::GhostPad::with_target(Some("src"), &aqueue.static_pad("src").unwrap()).unwrap();
         audio_bin.add_pad(&ghost).unwrap();
 
-        let amixer_pad = amixer.request_pad_simple("sink_%u").unwrap();
-        let vmixer_pad = vmixer.request_pad_simple("sink_%u").unwrap();
-
-        amixer_pad.set_property("volume", &slot.volume).unwrap();
+        slot.audio_pad.set_property("volume", &slot.volume).unwrap();
 
         gst::Element::link_many(&[aappsrc_elem, &aconv, &aresample, &acapsfilter, &aqueue])?;
         gst::Element::link_many(&[vappsrc_elem, &vconv, &vscale, &vcapsfilter, &vqueue])?;
 
         let srcpad = audio_bin.static_pad("src").unwrap();
-        srcpad.link(&amixer_pad).unwrap();
+        srcpad.link(&slot.audio_pad).unwrap();
 
         let srcpad = video_bin.static_pad("src").unwrap();
-        srcpad.link(&vmixer_pad).unwrap();
+        srcpad.link(&slot.video_pad).unwrap();
 
         slot.audio_bin = Some(audio_bin);
         slot.video_bin = Some(video_bin);
-        slot.audio_pad = Some(amixer_pad);
-        slot.video_pad = Some(vmixer_pad);
         slot.video_capsfilter = Some(vcapsfilter);
 
         slot.video_producer.add_consumer(&slot.video_appsrc, id);
@@ -479,24 +488,26 @@ impl Mixer {
     fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<StateChangeResult, Error> {
         let vsrc = self.build_base_plate()?;
         let vqueue = make_element("queue", None)?;
-        let vmixer = make_element("compositor", Some("compositor"))?;
         let vcapsfilter = make_element("capsfilter", None)?;
 
         let asrc = make_element("audiotestsrc", None)?;
         let asrccapsfilter = make_element("capsfilter", None)?;
         let aqueue = make_element("queue", None)?;
-        let amixer = make_element("audiomixer", Some("audiomixer"))?;
         let acapsfilter = make_element("capsfilter", None)?;
         let level = make_element("level", None)?;
         let aresample = make_element("audioresample", None)?;
         let aresamplecapsfilter = make_element("capsfilter", None)?;
 
-        vmixer.set_property_from_str("background", "black");
-        vmixer
+        self.video_mixer
+            .set_property_from_str("background", "black");
+        self.video_mixer
             .set_property(
                 "start-time-selection",
                 &gst_base::AggregatorStartTimeSelection::First,
             )
+            .unwrap();
+        self.video_mixer
+            .set_property("ignore-inactive-pads", &true)
             .unwrap();
 
         debug!("stream config: {:?}", self.config);
@@ -518,11 +529,14 @@ impl Mixer {
             .unwrap();
         asrc.set_property("is-live", &true).unwrap();
         asrc.set_property("volume", &0.).unwrap();
-        amixer
+        self.audio_mixer
             .set_property(
                 "start-time-selection",
                 &gst_base::AggregatorStartTimeSelection::First,
             )
+            .unwrap();
+        self.audio_mixer
+            .set_property("ignore-inactive-pads", &true)
             .unwrap();
 
         // FIXME: audiomixer doesn't deal very well with audio rate changes,
@@ -567,12 +581,12 @@ impl Mixer {
         self.pipeline.add_many(&[
             &vsrc,
             &vqueue,
-            &vmixer,
+            &self.video_mixer,
             &vcapsfilter,
             &asrc,
             &asrccapsfilter,
             &aqueue,
-            &amixer,
+            &self.audio_mixer,
             &acapsfilter,
             &level,
             &aresample,
@@ -582,7 +596,7 @@ impl Mixer {
         gst::Element::link_many(&[
             &vsrc,
             &vqueue,
-            &vmixer,
+            &self.video_mixer,
             &vcapsfilter,
             self.video_producer.appsink().upcast_ref(),
         ])?;
@@ -591,7 +605,7 @@ impl Mixer {
             &asrc,
             &asrccapsfilter,
             &aqueue,
-            &amixer,
+            &self.audio_mixer,
             &acapsfilter,
             &level,
             &aresample,
@@ -600,23 +614,17 @@ impl Mixer {
         ])?;
 
         for (id, slot) in self.consumer_slots.iter_mut() {
-            Mixer::connect_slot(
-                &self.pipeline,
-                slot,
-                &vmixer,
-                &amixer,
-                &self.id,
-                id,
-                &self.config,
-            )?;
+            Mixer::connect_slot(&self.pipeline, slot, &self.id, id, &self.config)?;
         }
 
         let video_mixing_state = self.video_mixing_state.clone();
         let id = self.id.clone();
         let timeout = self.fallback_timeout;
 
-        vmixer.set_property("emit-signals", &true).unwrap();
-        vmixer
+        self.video_mixer
+            .set_property("emit-signals", &true)
+            .unwrap();
+        self.video_mixer
             .downcast_ref::<gst_base::Aggregator>()
             .unwrap()
             .connect_samples_selected(
@@ -629,8 +637,10 @@ impl Mixer {
         let audio_mixing_state = self.audio_mixing_state.clone();
         let id = self.id.clone();
 
-        amixer.set_property("emit-signals", &true).unwrap();
-        amixer
+        self.audio_mixer
+            .set_property("emit-signals", &true)
+            .unwrap();
+        self.audio_mixer
             .downcast_ref::<gst_base::Aggregator>()
             .unwrap()
             .connect_samples_selected(
@@ -640,8 +650,6 @@ impl Mixer {
                 },
             );
 
-        self.video_mixer = Some(vmixer);
-        self.audio_mixer = Some(amixer);
         self.video_capsfilter = Some(vcapsfilter);
         self.audio_capsfilter = Some(aresamplecapsfilter);
 
@@ -776,9 +784,27 @@ impl Mixer {
         link_id: &str,
         video_producer: &StreamProducer,
         audio_producer: &StreamProducer,
+        config: Option<HashMap<String, serde_json::Value>>,
     ) -> Result<(), Error> {
         if self.consumer_slots.contains_key(link_id) {
             return Err(anyhow!("mixer {} already has link {}", self.id, link_id));
+        }
+
+        let video_pad = self.video_mixer.request_pad_simple("sink_%u").unwrap();
+        let audio_pad = self.audio_mixer.request_pad_simple("sink_%u").unwrap();
+
+        if let Some(config) = config {
+            for (key, value) in config {
+                let (is_video, property) = Mixer::parse_slot_config_key(&key)?;
+
+                let pad = if is_video { &video_pad } else { &audio_pad };
+
+                PropertyController::validate_value(property, pad.upcast_ref(), &value)?;
+
+                debug!("Setting initial slot config {} {}", property, value);
+
+                PropertyController::set_property_from_value(pad.upcast_ref(), property, &value);
+            }
         }
 
         let video_appsrc = gst::ElementFactory::make(
@@ -811,23 +837,14 @@ impl Mixer {
             video_bin: None,
             volume: 1.0,
             video_capsfilter: None,
-            video_pad: None,
-            audio_pad: None,
+            video_pad,
+            audio_pad,
         };
 
         if self.state_machine.state == State::Started {
-            let vmixer = self.video_mixer.clone().unwrap();
-            let amixer = self.audio_mixer.clone().unwrap();
-
-            if let Err(err) = Mixer::connect_slot(
-                &self.pipeline,
-                &mut slot,
-                &vmixer,
-                &amixer,
-                &self.id,
-                link_id,
-                &self.config,
-            ) {
+            if let Err(err) =
+                Mixer::connect_slot(&self.pipeline, &mut slot, &self.id, link_id, &self.config)
+            {
                 return Err(err);
             }
         }
@@ -850,10 +867,7 @@ impl Mixer {
                 video_bin.set_state(gst::State::Null).unwrap();
                 self.pipeline.remove(&video_bin).unwrap();
 
-                self.video_mixer
-                    .clone()
-                    .unwrap()
-                    .release_request_pad(&mixer_pad);
+                self.video_mixer.release_request_pad(&mixer_pad);
             }
             if let Some(audio_bin) = slot.audio_bin {
                 let mixer_pad = audio_bin.static_pad("src").unwrap().peer().unwrap();
@@ -862,10 +876,7 @@ impl Mixer {
                 audio_bin.set_state(gst::State::Null).unwrap();
                 self.pipeline.remove(&audio_bin).unwrap();
 
-                self.audio_mixer
-                    .clone()
-                    .unwrap()
-                    .release_request_pad(&mixer_pad);
+                self.audio_mixer.release_request_pad(&mixer_pad);
             }
 
             Ok(())
@@ -882,41 +893,18 @@ impl Mixer {
         property: &str,
         point: ControlPoint,
     ) -> Result<(), Error> {
-        if self.state_machine.state != State::Started {
-            return Err(anyhow!(
-                "Slot properties can only be controlled on a running mixer"
-            ));
-        }
-
-        let split: Vec<&str> = property.splitn(2, "::").collect();
-
-        let (is_video, property) = match split.len() {
-            2 => match split[0] {
-                "video" => (true, split[1]),
-                "audio" => (false, split[1]),
-                _ => {
-                    return Err(anyhow!(
-                        "Slot controller property media type must be one of {audio, video}"
-                    ));
-                }
-            },
-            _ => {
-                return Err(anyhow!(
-                    "Slot controller property name must be in form media-type::property-name"
-                ));
-            }
-        };
-
         if let Some(slot) = self.consumer_slots.get(slot_id) {
+            let (is_video, property) = Mixer::parse_slot_config_key(property)?;
+
             let pad = if is_video {
-                slot.video_pad.as_ref().unwrap().clone()
+                slot.video_pad.clone()
             } else {
-                slot.audio_pad.as_ref().unwrap().clone()
+                slot.audio_pad.clone()
             };
 
             debug!(slot_id = %slot_id, pad_name = %pad.name(), property = %property, "Upserting controller");
 
-            PropertyController::validate(property, pad.upcast_ref(), &point)?;
+            PropertyController::validate_control_point(property, pad.upcast_ref(), &point)?;
 
             let id = slot_id.to_owned() + property;
 
@@ -1059,7 +1047,8 @@ impl Handler<ConsumerMessage> for Mixer {
                 link_id,
                 video_producer,
                 audio_producer,
-            } => MessageResult(self.connect(&link_id, &video_producer, &audio_producer)),
+                config,
+            } => MessageResult(self.connect(&link_id, &video_producer, &audio_producer, config)),
             ConsumerMessage::Disconnect { slot_id } => MessageResult(self.disconnect(&slot_id)),
             ConsumerMessage::AddControlPoint {
                 slot_id,

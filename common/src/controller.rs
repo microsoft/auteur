@@ -151,6 +151,8 @@ pub enum GraphCommand {
         src_id: String,
         /// Identifier of an existing consumer
         sink_id: String,
+        /// Initial configuration of the consumer slot
+        config: Option<HashMap<String, serde_json::Value>>,
     },
     /// Schedule any node for starting, possibly immediately
     Start {

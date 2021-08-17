@@ -136,6 +136,8 @@ pub enum ConsumerMessage {
         video_producer: StreamProducer,
         /// The audio producer to connect to
         audio_producer: StreamProducer,
+        /// Initial configuration of the consumer slot
+        config: Option<HashMap<String, serde_json::Value>>,
     },
     /// Lets the consumer disconnect a slot from its associated
     /// producers
@@ -656,6 +658,7 @@ impl NodeManager {
         link_id: &str,
         src: &str,
         sink: &str,
+        config: Option<HashMap<String, serde_json::Value>>,
     ) -> ResponseActFuture<Self, CommandResult> {
         let producer = match self.producers.get(src) {
             Some(producer) => producer.clone(),
@@ -701,6 +704,7 @@ impl NodeManager {
                                 link_id,
                                 video_producer,
                                 audio_producer,
+                                config,
                             })
                             .in_current_span()
                             .await
@@ -886,7 +890,8 @@ impl Handler<CommandMessage> for NodeManager {
                     link_id,
                     src_id,
                     sink_id,
-                } => self.connect_future(&link_id, &src_id, &sink_id),
+                    config,
+                } => self.connect_future(&link_id, &src_id, &sink_id, config),
                 GraphCommand::Disconnect { link_id } => {
                     Box::pin(actix::fut::ready(self.disconnect(&link_id)))
                 }
