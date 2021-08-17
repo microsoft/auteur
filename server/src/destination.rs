@@ -552,6 +552,7 @@ impl Handler<ConsumerMessage> for Destination {
                 link_id,
                 video_producer,
                 audio_producer,
+                ..
             } => MessageResult(self.connect(&link_id, &video_producer, &audio_producer)),
             ConsumerMessage::Disconnect { slot_id } => MessageResult(self.disconnect(&slot_id)),
             ConsumerMessage::AddControlPoint { .. } => {

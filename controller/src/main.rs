@@ -76,6 +76,21 @@ impl From<ControlMode> for ArgControlMode {
     }
 }
 
+/// Parse a single key-value pair
+fn parse_config(
+    s: &str,
+) -> Result<(String, serde_json::Value), Box<dyn std::error::Error + Send + Sync + 'static>>
+where
+{
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{}`", s))?;
+
+    let res: serde_json::Value = serde_json::from_str(&s[pos + 1..])?;
+
+    Ok((s[..pos].parse()?, res))
+}
+
 /// Create and connect nodes
 #[derive(Clap, Debug)]
 enum NodeSubCommand {
@@ -92,6 +107,9 @@ enum NodeSubCommand {
         src_id: String,
         /// The id of an existing consumer node
         sink_id: String,
+        /// Initial configuration of the consumer slot
+        #[clap(parse(try_from_str = parse_config))]
+        config: Vec<(String, serde_json::Value)>,
     },
     /// Remove an existing link
     Disconnect {
@@ -326,10 +344,12 @@ fn main() -> Result<(), Error> {
                     link_id,
                     src_id,
                     sink_id,
+                    config,
                 } => Command::Graph(GraphCommand::Connect {
                     link_id,
                     src_id,
                     sink_id,
+                    config: Some(config.into_iter().collect()),
                 }),
                 NodeSubCommand::Disconnect { link_id } => {
                     Command::Graph(GraphCommand::Disconnect { link_id })

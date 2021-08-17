@@ -110,13 +110,265 @@ impl PropertyController {
         ret
     }
 
+    /// Validate a desired value against a GParamSpec
+    ///
+    /// The desired value must be in the valid range, and of the correct type.
+    pub fn validate_value_against_pspec(
+        pspec: &gst::glib::ParamSpec,
+        value: &serde_json::Value,
+    ) -> Result<(), Error> {
+        match pspec.value_type() {
+            Type::STRING => {
+                if !value.is_string() {
+                    Err(anyhow!(
+                        "expected string value for property {}",
+                        pspec.name()
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            Type::BOOL => {
+                if !value.is_boolean() {
+                    Err(anyhow!(
+                        "expected boolean value for property {}",
+                        pspec.name()
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            Type::U_LONG => {
+                if let Some(value) = value.as_u64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecULong>().unwrap();
+
+                    if value > pspec.maximum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected u64 value for property {}", pspec.name()))
+                }
+            }
+            Type::I_LONG => {
+                if let Some(value) = value.as_i64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecLong>().unwrap();
+
+                    if value > pspec.maximum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected i64 value for property {}", pspec.name()))
+                }
+            }
+            Type::U32 => {
+                if let Some(value) = value.as_u64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecUInt>().unwrap();
+
+                    if value > pspec.maximum() as u64 {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() as u64 {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected u32 value for property {}", pspec.name()))
+                }
+            }
+            Type::I32 => {
+                if let Some(value) = value.as_i64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecInt>().unwrap();
+
+                    if value > pspec.maximum() as i64 {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() as i64 {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected u64 value for property {}", pspec.name()))
+                }
+            }
+            Type::U64 => {
+                if let Some(value) = value.as_u64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecUInt64>().unwrap();
+
+                    if value > pspec.maximum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected u64 value"))
+                }
+            }
+            Type::I64 => {
+                if let Some(value) = value.as_i64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecInt64>().unwrap();
+
+                    if value > pspec.maximum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected i64 value for property {}", pspec.name()))
+                }
+            }
+            Type::F32 => {
+                if let Some(value) = value.as_f64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecFloat>().unwrap();
+
+                    if value > pspec.maximum() as f64 {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() as f64 {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected f32 value for property {}", pspec.name()))
+                }
+            }
+            Type::F64 => {
+                if let Some(value) = value.as_f64() {
+                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecDouble>().unwrap();
+
+                    if value > pspec.maximum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} > {})",
+                            pspec.name(),
+                            value,
+                            pspec.maximum()
+                        ));
+                    }
+
+                    if value < pspec.minimum() {
+                        return Err(anyhow!(
+                            "Invalid value for property {} ({} < {})",
+                            pspec.name(),
+                            value,
+                            pspec.minimum()
+                        ));
+                    }
+
+                    Ok(())
+                } else {
+                    Err(anyhow!("expected f64 value for property {}", pspec.name()))
+                }
+            }
+            _ => Err(anyhow!(
+                "Cannot control property {}, unsupported type: {:?}",
+                pspec.name(),
+                pspec.value_type()
+            )),
+        }
+    }
+
     /// Validate a desired future value for a property
     ///
     /// The property must exist on the object, the desired value
     /// must be in the valid range, and only certain property types
     /// are interpolatable, others such as strings or booleans must
     /// have mode == Set
-    pub fn validate(
+    pub fn validate_control_point(
         property: &str,
         obj: &gst::glib::Object,
         point: &ControlPoint,
@@ -135,238 +387,47 @@ impl PropertyController {
             return Err(anyhow!("property {} is not readable", property));
         }
 
+        PropertyController::validate_value_against_pspec(&pspec, &point.value)?;
+
+        // Additional verification for non-interpolatable types
         match pspec.value_type() {
-            Type::STRING => {
-                if !point.value.is_string() {
-                    Err(anyhow!("expected string value"))
-                } else {
-                    match point.mode {
-                        ControlMode::Set => Ok(()),
-                        ControlMode::Interpolate => Err(anyhow!(
-                            "Control points for string values must use mode Set"
-                        )),
-                    }
-                }
-            }
-            Type::BOOL => {
-                if !point.value.is_boolean() {
-                    Err(anyhow!("expected boolean value"))
-                } else {
-                    match point.mode {
-                        ControlMode::Set => Ok(()),
-                        ControlMode::Interpolate => Err(anyhow!(
-                            "Control points for boolean values must use mode Set"
-                        )),
-                    }
-                }
-            }
-            Type::U_LONG => {
-                if let Some(value) = point.value.as_u64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecULong>().unwrap();
-
-                    if value > pspec.maximum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected u64 value"))
-                }
-            }
-            Type::I_LONG => {
-                if let Some(value) = point.value.as_i64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecLong>().unwrap();
-
-                    if value > pspec.maximum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected i64 value"))
-                }
-            }
-            Type::U32 => {
-                if let Some(value) = point.value.as_u64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecUInt>().unwrap();
-
-                    if value > pspec.maximum() as u64 {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() as u64 {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected u32 value"))
-                }
-            }
-            Type::I32 => {
-                if let Some(value) = point.value.as_i64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecInt>().unwrap();
-
-                    if value > pspec.maximum() as i64 {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() as i64 {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected u64 value"))
-                }
-            }
-            Type::U64 => {
-                if let Some(value) = point.value.as_u64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecUInt64>().unwrap();
-
-                    if value > pspec.maximum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected u64 value"))
-                }
-            }
-            Type::I64 => {
-                if let Some(value) = point.value.as_i64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecInt64>().unwrap();
-
-                    if value > pspec.maximum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected i64 value"))
-                }
-            }
-            Type::F32 => {
-                if let Some(value) = point.value.as_f64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecFloat>().unwrap();
-
-                    if value > pspec.maximum() as f64 {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() as f64 {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected f32 value"))
-                }
-            }
-            Type::F64 => {
-                if let Some(value) = point.value.as_f64() {
-                    let pspec = pspec.downcast_ref::<gst::glib::ParamSpecDouble>().unwrap();
-
-                    if value > pspec.maximum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} > {})",
-                            value,
-                            pspec.maximum()
-                        ));
-                    }
-
-                    if value < pspec.minimum() {
-                        return Err(anyhow!(
-                            "Invalid value for control point ({} < {})",
-                            value,
-                            pspec.minimum()
-                        ));
-                    }
-
-                    Ok(())
-                } else {
-                    Err(anyhow!("expected f64 value"))
-                }
-            }
-            _ => Err(anyhow!(
-                "Cannot control property with type {:?}",
-                pspec.value_type()
-            )),
+            Type::STRING => match point.mode {
+                ControlMode::Set => Ok(()),
+                ControlMode::Interpolate => Err(anyhow!(
+                    "Control points for string values must use mode Set"
+                )),
+            },
+            Type::BOOL => match point.mode {
+                ControlMode::Set => Ok(()),
+                ControlMode::Interpolate => Err(anyhow!(
+                    "Control points for boolean values must use mode Set"
+                )),
+            },
+            _ => Ok(()),
         }
     }
 
+    /// Validate a value for a property
+    ///
+    /// The property must exist on the object, the desired value
+    /// must be in the valid range, and of the correct type
+    pub fn validate_value(
+        property: &str,
+        obj: &gst::glib::Object,
+        value: &serde_json::Value,
+    ) -> Result<(), Error> {
+        let pspec = obj
+            .find_property(property)
+            .ok_or_else(|| anyhow!("{:?} has no property named {}", obj, property))?;
+
+        if !pspec.flags().contains(gst::glib::ParamFlags::WRITABLE) {
+            return Err(anyhow!("property {} is not writable", property));
+        }
+
+        PropertyController::validate_value_against_pspec(&pspec, value)
+    }
+
+    /// Interpolate the value of a property towards the next control point
     fn interpolate_property(
         obj: &gst::Object,
         now: DateTime<Utc>,
@@ -481,6 +542,58 @@ impl PropertyController {
         period <= duration
     }
 
+    /// Set a property on a GObject from a json value
+    ///
+    /// No check is performed, use the validate_* functions
+    pub fn set_property_from_value(obj: &gst::Object, property: &str, value: &serde_json::Value) {
+        let prop_type = obj.property_type(property).unwrap();
+
+        match prop_type {
+            Type::STRING => {
+                let target = value.as_str().unwrap();
+
+                obj.set_property(property, target).unwrap();
+            }
+            Type::BOOL => {
+                let target = value.as_bool().unwrap();
+
+                obj.set_property(property, target).unwrap();
+            }
+            Type::I32 => {
+                let target = value.as_i64().unwrap();
+
+                obj.set_property(property, target as i32).unwrap();
+            }
+            Type::U32 => {
+                let target = value.as_i64().unwrap();
+
+                obj.set_property(property, target as u32).unwrap();
+            }
+            Type::I_LONG | Type::I64 => {
+                let target = value.as_i64().unwrap();
+
+                obj.set_property(property, target as i64).unwrap();
+            }
+            Type::U_LONG | Type::U64 => {
+                let target = value.as_u64().unwrap();
+
+                obj.set_property(property, target as u64).unwrap();
+            }
+            Type::F32 => {
+                let target = value.as_f64().unwrap();
+
+                obj.set_property(property, target as f32).unwrap();
+            }
+            Type::F64 => {
+                let target = value.as_f64().unwrap();
+
+                obj.set_property(property, target as f64).unwrap();
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Set the value of a property
     fn set_property(
         obj: &gst::Object,
         now: DateTime<Utc>,
@@ -491,51 +604,7 @@ impl PropertyController {
             return false;
         }
 
-        let prop_type = obj.property_type(property).unwrap();
-
-        match prop_type {
-            Type::STRING => {
-                let target = point.value.as_str().unwrap();
-
-                obj.set_property(property, target).unwrap();
-            }
-            Type::BOOL => {
-                let target = point.value.as_bool().unwrap();
-
-                obj.set_property(property, target).unwrap();
-            }
-            Type::I32 => {
-                let target = point.value.as_i64().unwrap();
-
-                obj.set_property(property, target as i32).unwrap();
-            }
-            Type::U32 => {
-                let target = point.value.as_i64().unwrap();
-
-                obj.set_property(property, target as u32).unwrap();
-            }
-            Type::I_LONG | Type::I64 => {
-                let target = point.value.as_i64().unwrap();
-
-                obj.set_property(property, target as i64).unwrap();
-            }
-            Type::U_LONG | Type::U64 => {
-                let target = point.value.as_u64().unwrap();
-
-                obj.set_property(property, target as u64).unwrap();
-            }
-            Type::F32 => {
-                let target = point.value.as_f64().unwrap();
-
-                obj.set_property(property, target as f32).unwrap();
-            }
-            Type::F64 => {
-                let target = point.value.as_f64().unwrap();
-
-                obj.set_property(property, target as f64).unwrap();
-            }
-            _ => unreachable!(),
-        }
+        PropertyController::set_property_from_value(obj, property, &point.value);
 
         true
     }
@@ -561,7 +630,8 @@ pub mod tests {
             mode: ControlMode::Set,
         };
 
-        PropertyController::validate("invalid-property", queue.upcast_ref(), &point).unwrap();
+        PropertyController::validate_control_point("invalid-property", queue.upcast_ref(), &point)
+            .unwrap();
     }
 
     #[test]
@@ -578,7 +648,8 @@ pub mod tests {
             mode: ControlMode::Set,
         };
 
-        PropertyController::validate("max-size-time", queue.upcast_ref(), &point).unwrap();
+        PropertyController::validate_control_point("max-size-time", queue.upcast_ref(), &point)
+            .unwrap();
     }
 
     #[test]
@@ -595,11 +666,16 @@ pub mod tests {
             mode: ControlMode::Set,
         };
 
-        PropertyController::validate("current-level-time", queue.upcast_ref(), &point).unwrap();
+        PropertyController::validate_control_point(
+            "current-level-time",
+            queue.upcast_ref(),
+            &point,
+        )
+        .unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "Invalid value for control point (4294967296 > 4294967295)")]
+    #[should_panic(expected = "(4294967296 > 4294967295)")]
     fn test_property_controller_validate_out_of_range_value() {
         gst::init().unwrap();
 
@@ -612,7 +688,8 @@ pub mod tests {
             mode: ControlMode::Set,
         };
 
-        PropertyController::validate("max-size-bytes", queue.upcast_ref(), &point).unwrap();
+        PropertyController::validate_control_point("max-size-bytes", queue.upcast_ref(), &point)
+            .unwrap();
     }
 
     #[test]
@@ -628,7 +705,8 @@ pub mod tests {
             mode: ControlMode::Set,
         };
 
-        PropertyController::validate("max-size-bytes", queue.upcast_ref(), &point).unwrap();
+        PropertyController::validate_control_point("max-size-bytes", queue.upcast_ref(), &point)
+            .unwrap();
     }
 
     #[test]
@@ -645,7 +723,8 @@ pub mod tests {
             mode: ControlMode::Set,
         };
 
-        PropertyController::validate("max-size-bytes", queue.upcast_ref(), &point).unwrap();
+        PropertyController::validate_control_point("max-size-bytes", queue.upcast_ref(), &point)
+            .unwrap();
 
         let mut controller =
             PropertyController::new("slot-0", queue.clone().upcast(), "max-size-bytes");
@@ -724,7 +803,8 @@ pub mod tests {
             mode: ControlMode::Interpolate,
         };
 
-        PropertyController::validate("max-size-bytes", queue.upcast_ref(), &point).unwrap();
+        PropertyController::validate_control_point("max-size-bytes", queue.upcast_ref(), &point)
+            .unwrap();
 
         let mut controller =
             PropertyController::new("slot-0", queue.clone().upcast(), "max-size-bytes");

@@ -83,9 +83,12 @@ def start_node(id_, cue_time=None, end_time=None):
     result = subprocess.check_output(cmd).decode().strip()
     print (result)
 
-def connect(src_id, sink_id):
+def connect(src_id, sink_id, config=None):
     link_id = '%s->%s_%s' % (src_id, sink_id, str(uuid.uuid4()))
     cmd = [EXE, SERVER, 'node', 'connect', link_id, src_id, sink_id]
+
+    if config is not None:
+        cmd += ['%s=%s' % (str(key), str(value)) for key, value in config.items()]
 
     result = subprocess.check_output(cmd).decode().strip()
 
@@ -118,9 +121,9 @@ def remove_node(id_):
     result = subprocess.check_output(cmd).decode().strip()
     print (result)
 
-def schedule_source(uri, src_id, dst_id, cue_time=None, end_time=None):
+def schedule_source(uri, src_id, dst_id, cue_time=None, end_time=None, slot_config=None):
     create_source(src_id, uri)
-    link_id = connect(src_id, dst_id)
+    link_id = connect(src_id, dst_id, config=slot_config)
     start_node(src_id, cue_time, end_time)
     return link_id
 
