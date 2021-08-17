@@ -31,13 +31,6 @@ pub enum MixerCommand {
         /// Sample rate of the output audio
         sample_rate: Option<i32>,
     },
-    /// Set the volume of an input stream
-    SetSlotVolume {
-        /// Unique identifier of the slot
-        slot_id: String,
-        /// New volume, 0.0 -> 10.0, 1.0 default
-        volume: f64,
-    },
 }
 
 /// Node-specific command variants

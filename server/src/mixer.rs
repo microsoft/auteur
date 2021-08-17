@@ -670,25 +670,6 @@ impl Mixer {
         Ok(StateChangeResult::Success)
     }
 
-    #[instrument(level = "debug", name = "updating slot volume", skip(self), fields(id = %self.id))]
-    fn set_slot_volume(&mut self, slot_id: &str, volume: f64) -> Result<(), Error> {
-        if !(0. ..=10.).contains(&volume) {
-            return Err(anyhow!("invalid slot volume: {}", volume));
-        }
-
-        if let Some(mut slot) = self.consumer_slots.get_mut(slot_id) {
-            slot.volume = volume;
-
-            if let Some(ref audio_bin) = slot.audio_bin {
-                let mixer_pad = audio_bin.static_pad("src").unwrap().peer().unwrap();
-                mixer_pad.set_property("volume", &volume).unwrap();
-            }
-            Ok(())
-        } else {
-            Err(anyhow!("mixer {} has no slot with id {}", self.id, slot_id))
-        }
-    }
-
     /// Implement UpdateConfig
     #[instrument(level = "debug", name = "updating config", skip(self), fields(id = %self.id))]
     fn update_config(
@@ -1085,9 +1066,6 @@ impl Handler<MixerCommandMessage> for Mixer {
                 height,
                 sample_rate,
             } => MessageResult(self.update_config(width, height, sample_rate)),
-            MixerCommand::SetSlotVolume { slot_id, volume } => {
-                MessageResult(self.set_slot_volume(&slot_id, volume))
-            }
         }
     }
 }
