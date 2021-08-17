@@ -288,9 +288,6 @@ fn main() -> Result<(), Error> {
         .build()?;
 
     runtime.block_on(async move {
-        let (mut controller, join_handle) =
-            Controller::new(opts.server, opts.certificate_file).await?;
-
         let command = match opts.subcmd {
             SubCommand::Node { subcmd } => match subcmd {
                 NodeSubCommand::Create { subcmd } => match subcmd {
@@ -427,6 +424,9 @@ fn main() -> Result<(), Error> {
                 }),
             },
         };
+
+        let (mut controller, join_handle) =
+            Controller::new(opts.server, opts.certificate_file).await?;
 
         controller.run_command(command, true).await;
 
