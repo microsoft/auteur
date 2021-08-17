@@ -35,6 +35,13 @@ def create_local_file_destination(id_, basename, max_size_time=None):
 
     print (result)
 
+def create_local_playback_destination(id_):
+    cmd = [EXE, SERVER, 'node', 'create', 'destination', 'local-playback', id_]
+
+    result = subprocess.check_output(cmd).decode().strip()
+
+    print (result)
+
 def create_mixer(id_, width, height, rate, fallback_image=None, fallback_timeout=None):
     cmd = [EXE, SERVER, 'node', 'create', 'mixer', id_, str(width), str(height), str(rate)]
 
