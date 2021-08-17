@@ -259,6 +259,8 @@ pub enum DestinationFamily {
         /// otherwise the single output file will be named `/path/to/video.mp4`
         max_size_time: Option<u32>,
     },
+    /// Play on local devices
+    LocalPlayback,
 }
 
 /// Source-specific information

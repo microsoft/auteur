@@ -213,6 +213,10 @@ enum CreateDestinationSubCommand {
         #[clap(long)]
         max_size_time: Option<u32>,
     },
+    LocalPlayback {
+        /// Unique identifier for the destination
+        id: String,
+    },
 }
 
 /// Source-specific commands
@@ -293,6 +297,12 @@ fn main() -> Result<(), Error> {
                                 max_size_time,
                             },
                         }),
+                        CreateDestinationSubCommand::LocalPlayback { id } => {
+                            Command::Graph(GraphCommand::CreateDestination {
+                                id,
+                                family: DestinationFamily::LocalPlayback,
+                            })
+                        }
                     },
                     CreateNodeSubCommand::Mixer {
                         id,

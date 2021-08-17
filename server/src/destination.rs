@@ -350,6 +350,67 @@ impl Destination {
         Ok(StateChangeResult::Success)
     }
 
+    /// LocalPlayback family
+    #[instrument(level = "debug", name = "playing on local devices", skip(self, ctx), fields(id = %self.id))]
+    fn start_local_playback_pipeline(
+        &mut self,
+        ctx: &mut Context<Self>,
+    ) -> Result<StateChangeResult, Error> {
+        let vqueue = make_element("queue", None)?;
+        let vconv = make_element("videoconvert", None)?;
+        let vsink = make_element("autovideosink", None)?;
+
+        let aqueue = make_element("queue", None)?;
+        let aconv = make_element("audioconvert", None)?;
+        let aresample = make_element("audioresample", None)?;
+        let asink = make_element("autoaudiosink", None)?;
+
+        self.pipeline.add_many(&[
+            self.video_appsrc.upcast_ref(),
+            &vqueue,
+            &vconv,
+            &vsink,
+            self.audio_appsrc.upcast_ref(),
+            &aqueue,
+            &aconv,
+            &aresample,
+            &asink,
+        ])?;
+
+        gst::Element::link_many(&[self.video_appsrc.upcast_ref(), &vqueue, &vconv, &vsink])?;
+
+        gst::Element::link_many(&[
+            self.audio_appsrc.upcast_ref(),
+            &aqueue,
+            &aconv,
+            &aresample,
+            &asink,
+        ])?;
+
+        if let Some(slot) = &self.consumer_slot {
+            debug!("connecting to producers");
+            slot.video_producer
+                .add_consumer(&self.video_appsrc, &slot.id);
+            slot.audio_producer
+                .add_consumer(&self.audio_appsrc, &slot.id);
+        } else {
+            debug!("started but not yet connected");
+        }
+
+        let addr = ctx.address();
+        let id = self.id.clone();
+        self.pipeline.call_async(move |pipeline| {
+            if let Err(err) = pipeline.set_state(gst::State::Playing) {
+                let _ = addr.do_send(ErrorMessage(format!(
+                    "Failed to start destination {}: {}",
+                    id, err
+                )));
+            }
+        });
+
+        Ok(StateChangeResult::Success)
+    }
+
     /// Implement Connect command
     #[instrument(level = "debug", name = "connecting", skip(self, video_producer, audio_producer), fields(id = %self.id))]
     fn connect(
@@ -469,6 +530,7 @@ impl Schedulable<Self> for Destination {
                     base_name,
                     max_size_time,
                 } => self.start_local_file_pipeline(ctx, &base_name, max_size_time),
+                DestinationFamily::LocalPlayback => self.start_local_playback_pipeline(ctx),
             },
             State::Started => Ok(StateChangeResult::Success),
             State::Stopping => {
