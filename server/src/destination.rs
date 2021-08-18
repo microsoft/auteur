@@ -15,8 +15,8 @@ use tracing::{debug, error, instrument, trace};
 use auteur_controlling::controller::{DestinationFamily, DestinationInfo, NodeInfo, State};
 
 use crate::node::{
-    ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage, NodeManager, NodeStatusMessage,
-    ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
+    AddControlPointMessage, ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage,
+    NodeManager, NodeStatusMessage, ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
@@ -673,5 +673,13 @@ mod tests {
         } else {
             panic!("Wrong info type");
         }
+    }
+}
+
+impl Handler<AddControlPointMessage> for Destination {
+    type Result = Result<(), Error>;
+
+    fn handle(&mut self, _msg: AddControlPointMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        Err(anyhow!("Destination has no property to control"))
     }
 }

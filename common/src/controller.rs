@@ -21,17 +21,7 @@ pub enum DestinationCommand {}
 /// Commands to execute on a mixer
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum MixerCommand {
-    /// Update the output format of the mixer
-    UpdateConfig {
-        /// Width of the output picture
-        width: Option<i32>,
-        /// Height of the output picture
-        height: Option<i32>,
-        /// Sample rate of the output audio
-        sample_rate: Option<i32>,
-    },
-}
+pub enum MixerCommand {}
 
 /// Node-specific command variants
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,24 +43,6 @@ pub struct NodeCommand {
     pub id: String,
     /// The command to execute
     pub command: NodeCommands,
-}
-
-// Simplistic, will be extended
-/// Configuration of a mixer's output stream
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct MixerConfig {
-    /// The width of the output picture
-    pub width: i32,
-    /// The height of the output picture
-    pub height: i32,
-    /// The sample rate of the output audio stream
-    pub sample_rate: i32,
-    /// Whether an image should be displayed as the base plate
-    pub fallback_image: Option<String>,
-    /// After how long to show the image when no other input stream
-    /// is being mixed
-    pub fallback_timeout: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -116,6 +88,8 @@ impl PartialOrd for ControlPoint {
 #[serde(rename_all = "lowercase")]
 pub enum GraphCommand {
     /// Create a source
+    ///
+    /// No slot properties are available.
     CreateSource {
         /// Unique identifier of the source
         id: String,
@@ -123,6 +97,8 @@ pub enum GraphCommand {
         uri: String,
     },
     /// Create a destination
+    ///
+    /// No slot properties are available.
     CreateDestination {
         /// Unique identifier of the destination
         id: String,
@@ -130,11 +106,23 @@ pub enum GraphCommand {
         family: DestinationFamily,
     },
     /// Create a mixer
+    ///
+    /// Available slot properties are all those exposed by audiomixer
+    /// and compositor pads, accessible through a `audio::` or
+    /// `video::` prefix respectively, eg `video::width`.
     CreateMixer {
         /// Unique identifier of the mixer
         id: String,
         /// Initial configuration of the mixer
-        config: MixerConfig,
+        ///
+        /// Available settings:
+        ///
+        /// * width, i32, 1 -> 2147483647, default 1920, controllable
+        /// * height, i32, 1 -> 2147483647, default 1920, controllable
+        /// * sample-rate, i32, 1 -> 2147483647, default 48000
+        /// * fallback-image, String, default ""
+        /// * fallback-timeout (ms), i32, 1 -> 2147483647, default 500, controllable
+        config: Option<HashMap<String, serde_json::Value>>,
     },
     /// Connect a producer with a consumer
     Connect {
@@ -145,6 +133,9 @@ pub enum GraphCommand {
         /// Identifier of an existing consumer
         sink_id: String,
         /// Initial configuration of the consumer slot
+        ///
+        /// Check out the documentation for the node creation function
+        /// for more information on the available consumer slot config keys.
         config: Option<HashMap<String, serde_json::Value>>,
     },
     /// Schedule any node for starting, possibly immediately
@@ -302,12 +293,6 @@ pub struct MixerSlotInfo {
 #[serde(rename_all = "lowercase")]
 /// Mixer-specific information
 pub struct MixerInfo {
-    /// The width of the output picture of the mixer
-    pub width: i32,
-    /// The height of the output picture of the mixer
-    pub height: i32,
-    /// The sample rate of the output audio stream of the mixer
-    pub sample_rate: i32,
     /// The mixer's input slots
     pub slots: HashMap<String, MixerSlotInfo>,
     /// The identifiers of the consumers of the mixer

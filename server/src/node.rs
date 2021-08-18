@@ -15,7 +15,7 @@ use actix::WeakRecipient;
 use anyhow::{anyhow, Error};
 use auteur_controlling::controller::{
     Command, CommandResult, ControlPoint, DestinationCommand, DestinationFamily, GraphCommand,
-    Info, MixerCommand, MixerConfig, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
+    Info, MixerCommand, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
 };
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
@@ -201,6 +201,19 @@ impl Message for ScheduleMessage {
     type Result = Result<(), Error>;
 }
 
+/// Add a property control point, sent from [`NodeManager`] to any [`Node`]
+#[derive(Debug)]
+pub struct AddControlPointMessage {
+    /// The name of the property to control
+    pub property: String,
+    /// The control point
+    pub control_point: ControlPoint,
+}
+
+impl Message for AddControlPointMessage {
+    type Result = Result<(), Error>;
+}
+
 /// Sent from [`NodeManager`] to any [`Node`] in order to make it initiate
 /// orderly teardown immediately.
 ///
@@ -332,6 +345,25 @@ impl Node {
             }
         })
     }
+
+    /// Control a property of the node
+    fn add_control_point(
+        &mut self,
+        msg: AddControlPointMessage,
+    ) -> ResponseFuture<Result<(), Error>> {
+        let recipient: Recipient<AddControlPointMessage> = match self {
+            Node::Source(addr) => addr.clone().recipient(),
+            Node::Destination(addr) => addr.clone().recipient(),
+            Node::Mixer(addr) => addr.clone().recipient(),
+        };
+
+        Box::pin(async move {
+            match recipient.send(msg).await {
+                Ok(res) => res,
+                Err(err) => Err(anyhow!("Internal server error {}", err)),
+            }
+        })
+    }
 }
 
 impl Default for NodeManager {
@@ -400,12 +432,22 @@ impl NodeManager {
     }
 
     /// Create a [`Mixer`] and store it as both a consumer and a producer
-    fn create_mixer(&mut self, id: &str, config: MixerConfig) -> CommandResult {
+    fn create_mixer(
+        &mut self,
+        id: &str,
+        config: Option<HashMap<String, serde_json::Value>>,
+    ) -> CommandResult {
         if self.nodes.contains_key(id) {
             return CommandResult::Error(format!("A node already exists with id {}", id));
         }
 
-        let mixer = Mixer::new(id, config);
+        let mixer = match Mixer::new(id, config) {
+            Ok(mixer) => mixer,
+            Err(err) => {
+                return CommandResult::Error(format!("Failed to create mixer: {}", err));
+            }
+        };
+
         let addr = mixer.start();
 
         self.nodes.insert(id.to_string(), Node::Mixer(addr.clone()));
@@ -817,6 +859,28 @@ impl NodeManager {
                             Err(err) => {
                                 CommandResult::Error(format!("Internal server error {}", err))
                             }
+                        })
+                    })
+                }
+                .in_current_actor_span(),
+            )
+        } else if let Some(node) = self.nodes.get(&controllee_id) {
+            let mut node = node.clone();
+            Box::pin(
+                {
+                    async move {
+                        node.add_control_point(AddControlPointMessage {
+                            property: property.to_string(),
+                            control_point,
+                        })
+                        .in_current_span()
+                        .await
+                    }
+                    .into_actor(self)
+                    .then(move |res, _slf, _ctx| {
+                        actix::fut::ready(match res {
+                            Ok(_) => CommandResult::Success,
+                            Err(err) => CommandResult::Error(format!("{}", err)),
                         })
                     })
                 }

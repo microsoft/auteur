@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 pub mod pipeline_manager;
 pub mod property_controller;
 pub mod schedulable;
+pub mod setting_controller;
 pub mod stream_producer;
 #[cfg(test)]
 pub mod tests;
@@ -15,6 +16,7 @@ pub mod tests;
 pub use pipeline_manager::{PipelineManager, StopManagerMessage, WaitForEosMessage};
 pub use property_controller::PropertyController;
 pub use schedulable::{Schedulable, StateChangeResult, StateMachine};
+pub use setting_controller::{Setting, SettingController, SettingSpec};
 pub use stream_producer::StreamProducer;
 
 /// Wrapper around `gst::ElementFactory::make` with a better error

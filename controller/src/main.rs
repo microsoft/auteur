@@ -9,8 +9,7 @@ mod controller;
 use controller::Controller;
 
 use auteur_controlling::controller::{
-    Command, ControlMode, ControlPoint, DestinationFamily, GraphCommand, MixerCommand, MixerConfig,
-    NodeCommand, NodeCommands,
+    Command, ControlMode, ControlPoint, DestinationFamily, GraphCommand,
 };
 
 #[derive(Clap, Debug)]
@@ -194,18 +193,9 @@ enum CreateNodeSubCommand {
     Mixer {
         /// Unique identifier for the mixer
         id: String,
-        /// Width of the output picture
-        width: i32,
-        /// Height of the output picture
-        height: i32,
-        /// sample rate of the output audio
-        sample_rate: i32,
-        /// local fallback image path
-        #[clap(long)]
-        fallback_image: Option<String>,
-        /// local fallback image timeout, milliseconds
-        #[clap(long)]
-        fallback_timeout: Option<u32>,
+        /// Initial configuration of the mixer
+        #[clap(parse(try_from_str = parse_config))]
+        config: Vec<(String, serde_json::Value)>,
     },
 }
 
@@ -247,22 +237,7 @@ enum DestinationSubCommand {}
 
 /// Mixer-specific commands
 #[derive(Clap, Debug)]
-enum MixerSubCommand {
-    /// Update resolution and / or sample rate
-    Update {
-        /// The id of an existing mixer
-        id: String,
-        /// The new width
-        #[clap(long)]
-        width: Option<i32>,
-        /// The new height
-        #[clap(long)]
-        height: Option<i32>,
-        /// The new sample rate
-        #[clap(long)]
-        sample_rate: Option<i32>,
-    },
-}
+enum MixerSubCommand {}
 
 /// Client application entry point
 fn main() -> Result<(), Error> {
@@ -310,23 +285,12 @@ fn main() -> Result<(), Error> {
                             })
                         }
                     },
-                    CreateNodeSubCommand::Mixer {
-                        id,
-                        width,
-                        height,
-                        sample_rate,
-                        fallback_image,
-                        fallback_timeout,
-                    } => Command::Graph(GraphCommand::CreateMixer {
-                        id,
-                        config: MixerConfig {
-                            width,
-                            height,
-                            sample_rate,
-                            fallback_image,
-                            fallback_timeout,
-                        },
-                    }),
+                    CreateNodeSubCommand::Mixer { id, config } => {
+                        Command::Graph(GraphCommand::CreateMixer {
+                            id,
+                            config: Some(config.into_iter().collect()),
+                        })
+                    }
                 },
                 NodeSubCommand::Connect {
                     link_id,
@@ -391,21 +355,7 @@ fn main() -> Result<(), Error> {
             },
             SubCommand::Source { subcmd } => match subcmd {},
             SubCommand::Destination { subcmd } => match subcmd {},
-            SubCommand::Mixer { subcmd } => match subcmd {
-                MixerSubCommand::Update {
-                    id,
-                    width,
-                    height,
-                    sample_rate,
-                } => Command::Node(NodeCommand {
-                    id,
-                    command: NodeCommands::Mixer(MixerCommand::UpdateConfig {
-                        width,
-                        height,
-                        sample_rate,
-                    }),
-                }),
-            },
+            SubCommand::Mixer { subcmd } => match subcmd {},
         };
 
         let (mut controller, join_handle) =
