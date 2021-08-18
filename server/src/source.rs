@@ -19,15 +19,15 @@
 //! in mind.
 
 use crate::node::{
-    GetNodeInfoMessage, GetProducerMessage, NodeManager, NodeStatusMessage, ScheduleMessage,
-    SourceCommandMessage, StartMessage, StopMessage, StoppedMessage,
+    AddControlPointMessage, GetNodeInfoMessage, GetProducerMessage, NodeManager, NodeStatusMessage,
+    ScheduleMessage, SourceCommandMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
     StopManagerMessage, StreamProducer,
 };
 use actix::prelude::*;
-use anyhow::Error;
+use anyhow::{anyhow, Error};
 use auteur_controlling::controller::{NodeInfo, SourceInfo, State};
 use chrono::{DateTime, Utc};
 use gst::prelude::*;
@@ -725,5 +725,13 @@ mod tests {
         let progression_result = listener_addr.send(WaitForProgressionMessage).await.unwrap();
 
         assert!(progression_result.progressed_as_expected);
+    }
+}
+
+impl Handler<AddControlPointMessage> for Source {
+    type Result = Result<(), Error>;
+
+    fn handle(&mut self, _msg: AddControlPointMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        Err(anyhow!("Source has no property to control"))
     }
 }
