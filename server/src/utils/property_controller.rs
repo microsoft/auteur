@@ -354,11 +354,34 @@ impl PropertyController {
                     Err(anyhow!("expected f64 value for property {}", pspec.name()))
                 }
             }
-            _ => Err(anyhow!(
-                "Cannot control property {}, unsupported type: {:?}",
-                pspec.name(),
-                pspec.value_type()
-            )),
+            _ => {
+                if let Some(pspec) = pspec.downcast_ref::<gst::glib::ParamSpecEnum>() {
+                    if !value.is_string() {
+                        Err(anyhow!(
+                            "expected string value for property {}",
+                            pspec.name()
+                        ))
+                    } else if pspec
+                        .enum_class()
+                        .to_value_by_nick(value.as_str().unwrap())
+                        .is_none()
+                    {
+                        Err(anyhow!(
+                            "value {} is not valid for property {}",
+                            value,
+                            pspec.name()
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    Err(anyhow!(
+                        "Cannot control property {}, unsupported type: {:?}",
+                        pspec.name(),
+                        pspec.value_type()
+                    ))
+                }
+            }
         }
     }
 
@@ -403,7 +426,18 @@ impl PropertyController {
                     "Control points for boolean values must use mode Set"
                 )),
             },
-            _ => Ok(()),
+            _ => {
+                if pspec.downcast_ref::<gst::glib::ParamSpecEnum>().is_some() {
+                    match point.mode {
+                        ControlMode::Set => Ok(()),
+                        ControlMode::Interpolate => {
+                            Err(anyhow!("Control points for enum values must use mode Set"))
+                        }
+                    }
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -546,9 +580,9 @@ impl PropertyController {
     ///
     /// No check is performed, use the validate_* functions
     pub fn set_property_from_value(obj: &gst::Object, property: &str, value: &serde_json::Value) {
-        let prop_type = obj.property_type(property).unwrap();
+        let pspec = obj.find_property(property).unwrap();
 
-        match prop_type {
+        match pspec.value_type() {
             Type::STRING => {
                 let target = value.as_str().unwrap();
 
@@ -589,7 +623,13 @@ impl PropertyController {
 
                 obj.set_property(property, target as f64).unwrap();
             }
-            _ => unreachable!(),
+            _ => {
+                if pspec.downcast_ref::<gst::glib::ParamSpecEnum>().is_some() {
+                    obj.set_property_from_str(property, value.as_str().unwrap());
+                } else {
+                    unreachable!()
+                }
+            }
         }
     }
 
