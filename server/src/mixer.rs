@@ -203,11 +203,29 @@ impl Mixer {
         settings
     }
 
-    fn get_setting(&self, name: &str) -> Option<MutexGuard<Setting>> {
-        match self.settings.get(name) {
-            Some(setting) => Some(setting.lock().unwrap()),
-            None => None,
-        }
+    fn setting(&self, name: &str) -> Option<MutexGuard<Setting>> {
+        self.settings
+            .get(name)
+            .map(|setting| setting.lock().unwrap())
+    }
+
+    fn settings(&self) -> HashMap<String, serde_json::Value> {
+        self.settings
+            .iter()
+            .map(|(id, setting)| (id.clone(), setting.lock().unwrap().as_value()))
+            .collect()
+    }
+
+    fn control_points(&self) -> HashMap<String, Vec<ControlPoint>> {
+        let mixing_state = self.video_mixing_state.lock().unwrap();
+
+        mixing_state
+            .mixer_controllers
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|(id, controller)| (id.clone(), controller.control_points()))
+            .collect()
     }
 
     /// Create a mixer
@@ -370,7 +388,7 @@ impl Mixer {
     fn build_base_plate(&mut self, width: i32, height: i32) -> Result<gst::Element, Error> {
         let bin = gst::Bin::new(None);
         let fallback_image = self
-            .get_setting("fallback-image")
+            .setting("fallback-image")
             .unwrap()
             .as_str()
             .unwrap()
@@ -594,9 +612,9 @@ impl Mixer {
     /// Start our pipeline when cue_time is reached
     #[instrument(level = "debug", name = "mixing", skip(self, ctx), fields(id = %self.id))]
     fn start_pipeline(&mut self, ctx: &mut Context<Self>) -> Result<StateChangeResult, Error> {
-        let width = self.get_setting("width").unwrap().as_i32().unwrap();
-        let height = self.get_setting("height").unwrap().as_i32().unwrap();
-        let sample_rate = self.get_setting("sample-rate").unwrap().as_i32().unwrap();
+        let width = self.setting("width").unwrap().as_i32().unwrap();
+        let height = self.setting("height").unwrap().as_i32().unwrap();
+        let sample_rate = self.setting("sample-rate").unwrap().as_i32().unwrap();
 
         let vsrc = self.build_base_plate(width, height)?;
         let vqueue = make_element("queue", None)?;
@@ -737,12 +755,8 @@ impl Mixer {
         let video_mixing_state = self.video_mixing_state.clone();
         video_mixing_state.lock().unwrap().capsfilter = Some(vcapsfilter);
         let id = self.id.clone();
-        let timeout = self
-            .get_setting("fallback-timeout")
-            .unwrap()
-            .as_i32()
-            .unwrap() as u64
-            * gst::MSECOND;
+        let timeout =
+            self.setting("fallback-timeout").unwrap().as_i32().unwrap() as u64 * gst::MSECOND;
 
         self.video_mixer
             .set_property("emit-signals", &true)
@@ -854,9 +868,9 @@ impl Mixer {
         };
 
         if self.state_machine.state == State::Started {
-            let width = self.get_setting("width").unwrap().as_i32().unwrap();
-            let height = self.get_setting("height").unwrap().as_i32().unwrap();
-            let sample_rate = self.get_setting("sample-rate").unwrap().as_i32().unwrap();
+            let width = self.setting("width").unwrap().as_i32().unwrap();
+            let height = self.setting("height").unwrap().as_i32().unwrap();
+            let sample_rate = self.setting("sample-rate").unwrap().as_i32().unwrap();
 
             if let Err(err) = Mixer::connect_slot(
                 &self.pipeline,
@@ -1016,6 +1030,23 @@ impl Mixer {
                     "audio::".to_owned() + &controller.propname,
                     controller.control_points(),
                 );
+        }
+
+        ret
+    }
+
+    fn slot_settings(&self) -> HashMap<String, HashMap<String, serde_json::Value>> {
+        let mut ret = HashMap::new();
+
+        for (id, slot) in &self.consumer_slots {
+            let mut properties =
+                PropertyController::properties(slot.video_pad.upcast_ref(), "video::");
+            properties.extend(PropertyController::properties(
+                slot.audio_pad.upcast_ref(),
+                "audio::",
+            ));
+
+            ret.insert(id.clone(), properties);
         }
 
         ret
@@ -1215,6 +1246,9 @@ impl Handler<GetNodeInfoMessage> for Mixer {
             cue_time: self.state_machine.cue_time,
             end_time: self.state_machine.end_time,
             state: self.state_machine.state,
+            settings: self.settings(),
+            control_points: self.control_points(),
+            slot_settings: self.slot_settings(),
             slot_control_points: self.slot_control_points(),
         }))
     }

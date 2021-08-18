@@ -303,6 +303,12 @@ pub struct MixerInfo {
     pub end_time: Option<DateTime<Utc>>,
     /// The state of the mixer
     pub state: State,
+    /// All the mixer settings
+    pub settings: HashMap<String, serde_json::Value>,
+    /// All controllers active on the mixer settings
+    pub control_points: HashMap<String, Vec<ControlPoint>>,
+    /// All the mixer's slot settings
+    pub slot_settings: HashMap<String, HashMap<String, serde_json::Value>>,
     /// All controllers active on the mixer's input slots
     pub slot_control_points: HashMap<String, HashMap<String, Vec<ControlPoint>>>,
 }

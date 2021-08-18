@@ -4,6 +4,7 @@ use gst::glib::types::Type;
 use gst::prelude::*;
 use priority_queue::PriorityQueue;
 use std::cmp::Reverse;
+use std::collections::HashMap;
 
 use anyhow::{anyhow, Error};
 use auteur_controlling::controller::{ControlMode, ControlPoint};
@@ -647,6 +648,49 @@ impl PropertyController {
         PropertyController::set_property_from_value(obj, property, &point.value);
 
         true
+    }
+
+    /// Lists all the current values for controllable properties of an object
+    pub fn properties(obj: &gst::Object, prefix: &str) -> HashMap<String, serde_json::Value> {
+        let mut ret = HashMap::new();
+
+        for pspec in obj.list_properties() {
+            if !pspec.flags().contains(gst::glib::ParamFlags::READABLE) {
+                continue;
+            }
+
+            if pspec.name() == "name" || pspec.name() == "parent" {
+                continue;
+            }
+
+            if obj.downcast_ref::<gst::Pad>().is_some() && pspec.name() == "direction" {
+                continue;
+            }
+
+            let prop_value = obj.property(pspec.name()).unwrap();
+
+            let value = match pspec.value_type() {
+                Type::STRING => prop_value.get::<String>().unwrap().into(),
+                Type::BOOL => prop_value.get::<bool>().unwrap().into(),
+                Type::I32 => prop_value.get::<i32>().unwrap().into(),
+                Type::U32 => prop_value.get::<u32>().unwrap().into(),
+                Type::I_LONG | Type::I64 => prop_value.get::<i64>().unwrap().into(),
+                Type::U_LONG | Type::U64 => prop_value.get::<u64>().unwrap().into(),
+                Type::F32 => prop_value.get::<f32>().unwrap().into(),
+                Type::F64 => prop_value.get::<f64>().unwrap().into(),
+                _ => {
+                    if pspec.downcast_ref::<gst::glib::ParamSpecEnum>().is_some() {
+                        prop_value.serialize().unwrap().to_string().into()
+                    } else {
+                        continue;
+                    }
+                }
+            };
+
+            ret.insert(prefix.to_owned() + pspec.name(), value);
+        }
+
+        ret
     }
 }
 
