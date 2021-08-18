@@ -42,14 +42,15 @@ def create_local_playback_destination(id_):
 
     print (result)
 
-def create_mixer(id_, width, height, rate, fallback_image=None, fallback_timeout=None):
-    cmd = [EXE, SERVER, 'node', 'create', 'mixer', id_, str(width), str(height), str(rate)]
+def create_mixer(id_, config=None):
+    cmd = [EXE, SERVER, 'node', 'create', 'mixer', id_]
 
-    if fallback_image is not None:
-        cmd += ['--fallback-image', fallback_image]
-
-    if fallback_timeout is not None:
-        cmd += ['--fallback-timeout', str(fallback_timeout)]
+    if config is not None:
+        for key, value in config.items():
+            if isinstance(value, str):
+                cmd += ['%s=\"%s\"' % (str(key), str(value))]
+            else:
+                cmd += ['%s=%s' % (str(key), str(value))]
 
     result = subprocess.check_output(cmd).decode().strip()
 
@@ -88,7 +89,11 @@ def connect(src_id, sink_id, config=None):
     cmd = [EXE, SERVER, 'node', 'connect', link_id, src_id, sink_id]
 
     if config is not None:
-        cmd += ['%s=%s' % (str(key), str(value)) for key, value in config.items()]
+        for key, value in config.items():
+            if isinstance(value, str):
+                cmd += ['%s=\"%s\"' % (str(key), str(value))]
+            else:
+                cmd += ['%s=%s' % (str(key), str(value))]
 
     result = subprocess.check_output(cmd).decode().strip()
 
@@ -159,7 +164,12 @@ def remove_control_point(controller_id, controllee_id, prop):
     print (result)
 
 if __name__ == '__main__':
-    create_mixer('channel-1', 720, 480, 44100, fallback_image='/home/meh/Pictures/bark.jpg')
+    create_mixer('channel-1', config={
+        'width': 1280,
+        'height': 720,
+        'sample-rate': 44100,
+        'fallback-image': '/home/meh/Pictures/bark.jpg'
+    })
     create_rtmp_destination('centricular-output', 'rtmp://learntv-transcoder.eastus.azurecontainer.io/live/centricular-output')
     create_local_file_destination('local', os.path.join(HERE, 'capture'))
     start_node('centricular-output')
@@ -168,6 +178,12 @@ if __name__ == '__main__':
     connect('channel-1', 'local')
     start_node('channel-1')
 
-    link_id = schedule_source('file:///home/meh/Videos/big_buck_bunny_720_stereo.mp4', 'bbb', 'channel-1', later(5))
+    link_id = schedule_source('file:///home/meh/Videos/big_buck_bunny_720_stereo.mp4', 'bbb', 'channel-1', later(5),
+            slot_config={
+                'video::zorder': 2,
+                'video::width': 1280,
+                'video::height': 720,
+                'video::sizing-policy': 'keep-aspect-ratio',
+            })
 
     get_info('bbb')
