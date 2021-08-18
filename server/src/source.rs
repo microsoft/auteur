@@ -20,7 +20,8 @@
 
 use crate::node::{
     AddControlPointMessage, GetNodeInfoMessage, GetProducerMessage, NodeManager, NodeStatusMessage,
-    ScheduleMessage, SourceCommandMessage, StartMessage, StopMessage, StoppedMessage,
+    RemoveControlPointMessage, ScheduleMessage, SourceCommandMessage, StartMessage, StopMessage,
+    StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
@@ -733,5 +734,16 @@ impl Handler<AddControlPointMessage> for Source {
 
     fn handle(&mut self, _msg: AddControlPointMessage, _ctx: &mut Context<Self>) -> Self::Result {
         Err(anyhow!("Source has no property to control"))
+    }
+}
+
+impl Handler<RemoveControlPointMessage> for Source {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        _msg: RemoveControlPointMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
     }
 }

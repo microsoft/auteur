@@ -16,7 +16,8 @@ use auteur_controlling::controller::{DestinationFamily, DestinationInfo, NodeInf
 
 use crate::node::{
     AddControlPointMessage, ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage,
-    NodeManager, NodeStatusMessage, ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
+    NodeManager, NodeStatusMessage, RemoveControlPointMessage, ScheduleMessage, StartMessage,
+    StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
@@ -681,5 +682,16 @@ impl Handler<AddControlPointMessage> for Destination {
 
     fn handle(&mut self, _msg: AddControlPointMessage, _ctx: &mut Context<Self>) -> Self::Result {
         Err(anyhow!("Destination has no property to control"))
+    }
+}
+
+impl Handler<RemoveControlPointMessage> for Destination {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        _msg: RemoveControlPointMessage,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
     }
 }
