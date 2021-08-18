@@ -46,6 +46,13 @@ impl Setting {
             _ => None,
         }
     }
+
+    pub fn as_value(&self) -> serde_json::Value {
+        match self.spec {
+            SettingSpec::I32 { current, .. } => current.into(),
+            SettingSpec::Str { ref current, .. } => current.clone().into(),
+        }
+    }
 }
 
 /// Represents a controller for a setting
