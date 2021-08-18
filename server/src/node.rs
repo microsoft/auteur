@@ -214,6 +214,19 @@ impl Message for AddControlPointMessage {
     type Result = Result<(), Error>;
 }
 
+/// Remove a control point, sent from [`NodeManager`] to any [`Node`]
+#[derive(Debug)]
+pub struct RemoveControlPointMessage {
+    /// The id of the control point
+    pub controller_id: String,
+    /// The name of the controlled property
+    pub property: String,
+}
+
+impl Message for RemoveControlPointMessage {
+    type Result = ();
+}
+
 /// Sent from [`NodeManager`] to any [`Node`] in order to make it initiate
 /// orderly teardown immediately.
 ///
@@ -363,6 +376,16 @@ impl Node {
                 Err(err) => Err(anyhow!("Internal server error {}", err)),
             }
         })
+    }
+
+    /// Remove a control point for the node
+    fn remove_control_point(&self, msg: RemoveControlPointMessage) {
+        let recipient: Recipient<RemoveControlPointMessage> = match self {
+            Node::Source(addr) => addr.clone().recipient(),
+            Node::Destination(addr) => addr.clone().recipient(),
+            Node::Mixer(addr) => addr.clone().recipient(),
+        };
+        let _ = recipient.do_send(msg);
     }
 }
 
@@ -908,6 +931,12 @@ impl NodeManager {
             let _ = consumer.do_send(ConsumerMessage::RemoveControlPoint {
                 controller_id: id.to_string(),
                 slot_id: controllee_id.to_string(),
+                property: property.to_string(),
+            });
+            CommandResult::Success
+        } else if let Some(node) = self.nodes.get(controllee_id) {
+            node.remove_control_point(RemoveControlPointMessage {
+                controller_id: id.to_string(),
                 property: property.to_string(),
             });
             CommandResult::Success

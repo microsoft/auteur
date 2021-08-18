@@ -15,8 +15,8 @@ use auteur_controlling::controller::{ControlPoint, MixerInfo, MixerSlotInfo, Nod
 
 use crate::node::{
     AddControlPointMessage, ConsumerMessage, GetNodeInfoMessage, GetProducerMessage,
-    MixerCommandMessage, NodeManager, NodeStatusMessage, ScheduleMessage, StartMessage,
-    StopMessage, StoppedMessage,
+    MixerCommandMessage, NodeManager, NodeStatusMessage, RemoveControlPointMessage,
+    ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     get_now, make_element, ErrorMessage, PipelineManager, PropertyController, Schedulable, Setting,
@@ -1046,6 +1046,21 @@ impl Mixer {
         }
     }
 
+    /// Implement RemoveControlPoint command for the mixer
+    #[instrument(level = "debug", name = "removing control point", skip(self), fields(id = %self.id))]
+    fn remove_control_point(&mut self, controller_id: &str, property: &str) {
+        let mut mixing_state = self.video_mixing_state.lock().unwrap();
+
+        if let Some(controller) = mixing_state
+            .slot_controllers
+            .as_mut()
+            .unwrap()
+            .get_mut(property)
+        {
+            controller.remove_control_point(controller_id);
+        }
+    }
+
     #[instrument(level = "debug", skip(self, ctx), fields(id = %self.id))]
     fn stop(&mut self, ctx: &mut Context<Self>) {
         self.stop_schedule(ctx);
@@ -1210,5 +1225,13 @@ impl Handler<AddControlPointMessage> for Mixer {
 
     fn handle(&mut self, msg: AddControlPointMessage, _ctx: &mut Context<Self>) -> Self::Result {
         self.add_control_point(msg.property, msg.control_point)
+    }
+}
+
+impl Handler<RemoveControlPointMessage> for Mixer {
+    type Result = ();
+
+    fn handle(&mut self, msg: RemoveControlPointMessage, _ctx: &mut Context<Self>) -> Self::Result {
+        self.remove_control_point(&msg.controller_id, &msg.property)
     }
 }
