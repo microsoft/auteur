@@ -20,8 +20,7 @@
 
 use crate::node::{
     AddControlPointMessage, GetNodeInfoMessage, GetProducerMessage, NodeManager, NodeStatusMessage,
-    RemoveControlPointMessage, ScheduleMessage, SourceCommandMessage, StartMessage, StopMessage,
-    StoppedMessage,
+    RemoveControlPointMessage, ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
@@ -484,14 +483,6 @@ impl Handler<StartMessage> for Source {
 
     fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
         MessageResult(self.start_schedule(ctx, msg.cue_time, msg.end_time))
-    }
-}
-
-impl Handler<SourceCommandMessage> for Source {
-    type Result = MessageResult<SourceCommandMessage>;
-
-    fn handle(&mut self, _msg: SourceCommandMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        MessageResult(Ok(()))
     }
 }
 

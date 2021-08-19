@@ -8,43 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-/// Commands to execute on a source
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SourceCommand {}
-
-/// Commands to execute on a destination
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DestinationCommand {}
-
-/// Commands to execute on a mixer
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MixerCommand {}
-
-/// Node-specific command variants
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeCommands {
-    /// Source-specific commands
-    Source(SourceCommand),
-    /// Destination-specific commands
-    Destination(DestinationCommand),
-    /// Mixer-specific commands
-    Mixer(MixerCommand),
-}
-
-/// Node-specific commands
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct NodeCommand {
-    /// Unique identifier of the node
-    pub id: String,
-    /// The command to execute
-    pub command: NodeCommands,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 /// Defines how a property should be controlled
@@ -82,11 +45,10 @@ impl PartialOrd for ControlPoint {
     }
 }
 
-/// Generic commands for creating and removing nodes, managing connections
-/// and rescheduling
+/// Command variants
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum GraphCommand {
+pub enum Command {
     /// Create a source
     ///
     /// No slot properties are available.
@@ -190,14 +152,6 @@ pub enum GraphCommand {
         /// Name of the controlled property
         property: String,
     },
-}
-
-/// Command variants
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Command {
-    Node(NodeCommand),
-    Graph(GraphCommand),
 }
 
 /// Messages sent from the controller to the server.

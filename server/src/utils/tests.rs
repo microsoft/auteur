@@ -1,9 +1,7 @@
 use crate::node::{CommandMessage, NodeManager, NodeStatusMessage, RegisterListenerMessage};
 use actix::prelude::*;
 use anyhow::{anyhow, Error};
-use auteur_controlling::controller::{
-    Command, CommandResult, DestinationFamily, GraphCommand, NodeInfo, State,
-};
+use auteur_controlling::controller::{Command, CommandResult, DestinationFamily, NodeInfo, State};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
 use std::collections::VecDeque;
@@ -127,10 +125,10 @@ pub async fn create_source(id: &str, uri: &str) -> Result<(), Error> {
 
     match manager
         .send(CommandMessage {
-            command: Command::Graph(GraphCommand::CreateSource {
+            command: Command::CreateSource {
                 id: id.to_string(),
                 uri: uri.to_string(),
-            }),
+            },
         })
         .await
         .unwrap()
@@ -151,13 +149,13 @@ pub async fn create_local_destination(
 
     match manager
         .send(CommandMessage {
-            command: Command::Graph(GraphCommand::CreateDestination {
+            command: Command::CreateDestination {
                 id: id.to_string(),
                 family: DestinationFamily::LocalFile {
                     base_name: base_name.to_string(),
                     max_size_time,
                 },
-            }),
+            },
         })
         .await
         .unwrap()
@@ -178,11 +176,11 @@ pub async fn start_node(
 
     match manager
         .send(CommandMessage {
-            command: Command::Graph(GraphCommand::Start {
+            command: Command::Start {
                 id: id.to_string(),
                 cue_time,
                 end_time,
-            }),
+            },
         })
         .await
         .unwrap()
@@ -203,11 +201,11 @@ pub async fn reschedule_node(
 
     match manager
         .send(CommandMessage {
-            command: Command::Graph(GraphCommand::Reschedule {
+            command: Command::Reschedule {
                 id: id.to_string(),
                 cue_time,
                 end_time,
-            }),
+            },
         })
         .await
         .unwrap()
@@ -224,9 +222,9 @@ pub async fn node_info_unchecked(id: &str) -> NodeInfo {
 
     if let CommandResult::Info(mut info) = manager
         .send(CommandMessage {
-            command: Command::Graph(GraphCommand::GetInfo {
+            command: Command::GetInfo {
                 id: Some(id.to_string()),
-            }),
+            },
         })
         .await
         .unwrap()

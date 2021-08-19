@@ -15,9 +15,8 @@ use tracing::{debug, error, instrument, trace};
 use auteur_controlling::controller::{DestinationFamily, DestinationInfo, NodeInfo, State};
 
 use crate::node::{
-    AddControlPointMessage, ConsumerMessage, DestinationCommandMessage, GetNodeInfoMessage,
-    NodeManager, NodeStatusMessage, RemoveControlPointMessage, ScheduleMessage, StartMessage,
-    StopMessage, StoppedMessage,
+    AddControlPointMessage, ConsumerMessage, GetNodeInfoMessage, NodeManager, NodeStatusMessage,
+    RemoveControlPointMessage, ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
 };
 use crate::utils::{
     make_element, ErrorMessage, PipelineManager, Schedulable, StateChangeResult, StateMachine,
@@ -571,18 +570,6 @@ impl Handler<StartMessage> for Destination {
 
     fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
         MessageResult(self.start_schedule(ctx, msg.cue_time, msg.end_time))
-    }
-}
-
-impl Handler<DestinationCommandMessage> for Destination {
-    type Result = MessageResult<DestinationCommandMessage>;
-
-    fn handle(
-        &mut self,
-        _msg: DestinationCommandMessage,
-        _ctx: &mut Context<Self>,
-    ) -> Self::Result {
-        MessageResult(Ok(()))
     }
 }
 

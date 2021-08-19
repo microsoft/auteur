@@ -8,9 +8,7 @@ use std::path::PathBuf;
 mod controller;
 use controller::Controller;
 
-use auteur_controlling::controller::{
-    Command, ControlMode, ControlPoint, DestinationFamily, GraphCommand,
-};
+use auteur_controlling::controller::{Command, ControlMode, ControlPoint, DestinationFamily};
 
 #[derive(Clap, Debug)]
 #[clap(author = "Mathieu Duponchelle <mathieu@centricular.com>")]
@@ -33,21 +31,6 @@ enum SubCommand {
     Node {
         #[clap(subcommand)]
         subcmd: NodeSubCommand,
-    },
-    /// Control sources
-    Source {
-        #[clap(subcommand)]
-        subcmd: SourceSubCommand,
-    },
-    /// Control destinations
-    Destination {
-        #[clap(subcommand)]
-        subcmd: DestinationSubCommand,
-    },
-    /// Control mixers
-    Mixer {
-        #[clap(subcommand)]
-        subcmd: MixerSubCommand,
     },
 }
 
@@ -257,75 +240,69 @@ fn main() -> Result<(), Error> {
         let command = match opts.subcmd {
             SubCommand::Node { subcmd } => match subcmd {
                 NodeSubCommand::Create { subcmd } => match subcmd {
-                    CreateNodeSubCommand::Source { id, uri } => {
-                        Command::Graph(GraphCommand::CreateSource { id, uri })
-                    }
+                    CreateNodeSubCommand::Source { id, uri } => Command::CreateSource { id, uri },
                     CreateNodeSubCommand::Destination { subcmd } => match subcmd {
                         CreateDestinationSubCommand::Rtmp { id, uri } => {
-                            Command::Graph(GraphCommand::CreateDestination {
+                            Command::CreateDestination {
                                 id,
                                 family: DestinationFamily::Rtmp { uri },
-                            })
+                            }
                         }
                         CreateDestinationSubCommand::LocalFile {
                             id,
                             base_name,
                             max_size_time,
-                        } => Command::Graph(GraphCommand::CreateDestination {
+                        } => Command::CreateDestination {
                             id,
                             family: DestinationFamily::LocalFile {
                                 base_name,
                                 max_size_time,
                             },
-                        }),
+                        },
                         CreateDestinationSubCommand::LocalPlayback { id } => {
-                            Command::Graph(GraphCommand::CreateDestination {
+                            Command::CreateDestination {
                                 id,
                                 family: DestinationFamily::LocalPlayback,
-                            })
+                            }
                         }
                     },
-                    CreateNodeSubCommand::Mixer { id, config } => {
-                        Command::Graph(GraphCommand::CreateMixer {
-                            id,
-                            config: Some(config.into_iter().collect()),
-                        })
-                    }
+                    CreateNodeSubCommand::Mixer { id, config } => Command::CreateMixer {
+                        id,
+                        config: Some(config.into_iter().collect()),
+                    },
                 },
                 NodeSubCommand::Connect {
                     link_id,
                     src_id,
                     sink_id,
                     config,
-                } => Command::Graph(GraphCommand::Connect {
+                } => Command::Connect {
                     link_id,
                     src_id,
                     sink_id,
                     config: Some(config.into_iter().collect()),
-                }),
-                NodeSubCommand::Disconnect { link_id } => {
-                    Command::Graph(GraphCommand::Disconnect { link_id })
-                }
+                },
+                NodeSubCommand::Disconnect { link_id } => Command::Disconnect { link_id },
                 NodeSubCommand::Start {
                     id,
                     cue_time,
                     end_time,
-                } => Command::Graph(GraphCommand::Start {
+                } => Command::Start {
                     id,
                     cue_time,
                     end_time,
-                }),
+                },
                 NodeSubCommand::Reschedule {
                     id,
                     cue_time,
                     end_time,
-                } => Command::Graph(GraphCommand::Reschedule {
+                } => Command::Reschedule {
                     id,
                     cue_time,
                     end_time,
-                }),
-                NodeSubCommand::Remove { id } => Command::Graph(GraphCommand::Remove { id }),
-                NodeSubCommand::GetInfo { id } => Command::Graph(GraphCommand::GetInfo { id }),
+                },
+                NodeSubCommand::Remove { id } => Command::Remove { id },
+                NodeSubCommand::GetInfo { id } => Command::GetInfo { id },
                 NodeSubCommand::AddControlPoint {
                     id,
                     controllee_id,
@@ -333,7 +310,7 @@ fn main() -> Result<(), Error> {
                     time,
                     value,
                     mode,
-                } => Command::Graph(GraphCommand::AddControlPoint {
+                } => Command::AddControlPoint {
                     controllee_id,
                     property,
                     control_point: ControlPoint {
@@ -342,20 +319,17 @@ fn main() -> Result<(), Error> {
                         value,
                         mode: mode.into(),
                     },
-                }),
+                },
                 NodeSubCommand::RemoveControlPoint {
                     id,
                     controllee_id,
                     property,
-                } => Command::Graph(GraphCommand::RemoveControlPoint {
+                } => Command::RemoveControlPoint {
                     id,
                     controllee_id,
                     property,
-                }),
+                },
             },
-            SubCommand::Source { subcmd } => match subcmd {},
-            SubCommand::Destination { subcmd } => match subcmd {},
-            SubCommand::Mixer { subcmd } => match subcmd {},
         };
 
         let (mut controller, join_handle) =
