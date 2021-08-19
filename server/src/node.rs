@@ -14,8 +14,7 @@ use actix::prelude::*;
 use actix::WeakRecipient;
 use anyhow::{anyhow, Error};
 use auteur_controlling::controller::{
-    Command, CommandResult, ControlPoint, DestinationCommand, DestinationFamily, GraphCommand,
-    Info, MixerCommand, NodeCommand, NodeCommands, NodeInfo, SourceCommand, State,
+    Command, CommandResult, ControlPoint, DestinationFamily, Info, NodeInfo, State,
 };
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
@@ -76,39 +75,6 @@ pub struct CommandMessage {
 
 impl Message for CommandMessage {
     type Result = CommandResult;
-}
-
-/// Source-specific commands, sent from [`NodeManager`] to [`Source`]
-#[derive(Debug)]
-pub struct SourceCommandMessage {
-    /// The command to dispatch to the source node
-    pub command: SourceCommand,
-}
-
-impl Message for SourceCommandMessage {
-    type Result = Result<(), Error>;
-}
-
-/// Destination-specific commands, sent from [`NodeManager`] to [`Destination`]
-#[derive(Debug)]
-pub struct DestinationCommandMessage {
-    /// The command to dispatch to the destination node
-    pub command: DestinationCommand,
-}
-
-impl Message for DestinationCommandMessage {
-    type Result = Result<(), Error>;
-}
-
-/// Mixer-specific commands, sent from [`NodeManager`] to [`Mixer`]
-#[derive(Debug)]
-pub struct MixerCommandMessage {
-    /// The command to dispatch to the mixer node
-    pub command: MixerCommand,
-}
-
-impl Message for MixerCommandMessage {
-    type Result = Result<(), Error>;
 }
 
 /// Getter for [`stream producers`](crate::utils::StreamProducer),
@@ -534,126 +500,6 @@ impl NodeManager {
         }
     }
 
-    /// Dispatch a [`Source`] command
-    #[instrument(level = "trace", name = "source-command", skip(self))]
-    fn send_source_command_future(
-        &mut self,
-        id: &str,
-        command: SourceCommand,
-    ) -> ResponseActFuture<Self, CommandResult> {
-        let source = match self.nodes.get(id) {
-            Some(Node::Source(source)) => source.clone(),
-            Some(_) => {
-                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
-                    "node with id {} is not a source",
-                    id
-                ))));
-            }
-            None => {
-                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
-                    "No source with id {}",
-                    id
-                ))));
-            }
-        };
-
-        Box::pin(
-            {
-                async move { source.send(SourceCommandMessage { command }).await }
-                    .into_actor(self)
-                    .then(move |res, _slf, _ctx| {
-                        actix::fut::ready(match res {
-                            Ok(_) => CommandResult::Success,
-                            Err(err) => {
-                                CommandResult::Error(format!("Internal server error {}", err))
-                            }
-                        })
-                    })
-            }
-            .in_current_actor_span(),
-        )
-    }
-
-    /// Dispatch a [`Destination`] command
-    #[instrument(level = "trace", name = "destination-command", skip(self))]
-    fn send_destination_command_future(
-        &mut self,
-        id: &str,
-        command: DestinationCommand,
-    ) -> ResponseActFuture<Self, CommandResult> {
-        let dest = match self.nodes.get(id) {
-            Some(Node::Destination(dest)) => dest.clone(),
-            Some(_) => {
-                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
-                    "node with id {} is not a destination",
-                    id
-                ))));
-            }
-            None => {
-                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
-                    "No destination with id {}",
-                    id
-                ))));
-            }
-        };
-
-        Box::pin(
-            {
-                async move { dest.send(DestinationCommandMessage { command }).await }
-                    .into_actor(self)
-                    .then(move |res, _slf, _ctx| {
-                        actix::fut::ready(match res {
-                            Ok(_) => CommandResult::Success,
-                            Err(err) => {
-                                CommandResult::Error(format!("Internal server error {}", err))
-                            }
-                        })
-                    })
-            }
-            .in_current_actor_span(),
-        )
-    }
-
-    /// Dispatch a [`Mixer`] command
-    #[instrument(level = "trace", name = "mixer-command", skip(self))]
-    fn send_mixer_command_future(
-        &mut self,
-        id: &str,
-        command: MixerCommand,
-    ) -> ResponseActFuture<Self, CommandResult> {
-        let mixer = match self.nodes.get(id) {
-            Some(Node::Mixer(mixer)) => mixer.clone(),
-            Some(_) => {
-                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
-                    "node with id {} is not a mixer",
-                    id
-                ))));
-            }
-            None => {
-                return Box::pin(actix::fut::ready(CommandResult::Error(format!(
-                    "No mixer with id {}",
-                    id
-                ))));
-            }
-        };
-
-        Box::pin(
-            {
-                async move { mixer.send(MixerCommandMessage { command }).await }
-                    .into_actor(self)
-                    .then(move |res, _slf, _ctx| {
-                        actix::fut::ready(match res {
-                            Ok(_) => CommandResult::Success,
-                            Err(err) => {
-                                CommandResult::Error(format!("Internal server error {}", err))
-                            }
-                        })
-                    })
-            }
-            .in_current_actor_span(),
-        )
-    }
-
     /// Start a [`Node`]
     #[instrument(level = "trace", name = "start-command", skip(self))]
     fn send_start_command_future(
@@ -978,64 +824,50 @@ impl Handler<CommandMessage> for NodeManager {
     #[instrument(level = "trace", name = "command", skip(self, _ctx))]
     fn handle(&mut self, msg: CommandMessage, _ctx: &mut Context<Self>) -> Self::Result {
         match msg.command {
-            Command::Graph(cmd) => match cmd {
-                GraphCommand::Connect {
-                    link_id,
-                    src_id,
-                    sink_id,
-                    config,
-                } => self.connect_future(&link_id, &src_id, &sink_id, config),
-                GraphCommand::Disconnect { link_id } => {
-                    Box::pin(actix::fut::ready(self.disconnect(&link_id)))
-                }
-                GraphCommand::CreateSource { id, uri } => {
-                    Box::pin(actix::fut::ready(self.create_source(&id, &uri)))
-                }
-                GraphCommand::CreateDestination { id, family } => {
-                    Box::pin(actix::fut::ready(self.create_destination(&id, &family)))
-                }
-                GraphCommand::CreateMixer { id, config } => {
-                    Box::pin(actix::fut::ready(self.create_mixer(&id, config)))
-                }
-                GraphCommand::Start {
-                    id,
-                    cue_time,
-                    end_time,
-                } => self.send_start_command_future(&id, cue_time, end_time),
-                GraphCommand::Reschedule {
-                    id,
-                    cue_time,
-                    end_time,
-                } => self.send_schedule_command_future(&id, cue_time, end_time),
-                GraphCommand::Remove { id } => Box::pin(actix::fut::ready(self.stop_node(&id))),
-                GraphCommand::GetInfo { id } => self.get_info_future(id.as_ref()),
-                GraphCommand::AddControlPoint {
-                    controllee_id,
-                    property,
-                    control_point,
-                } => self.control_property_future(controllee_id, property, control_point),
-                GraphCommand::RemoveControlPoint {
-                    id,
-                    controllee_id,
-                    property,
-                } => Box::pin(actix::fut::ready(self.remove_control_point(
-                    &id,
-                    &controllee_id,
-                    &property,
-                ))),
-            },
-            Command::Node(cmd) => {
-                let NodeCommand { id, command } = cmd;
-                match command {
-                    NodeCommands::Source(src_cmd) => self.send_source_command_future(&id, src_cmd),
-                    NodeCommands::Destination(dest_cmd) => {
-                        self.send_destination_command_future(&id, dest_cmd)
-                    }
-                    NodeCommands::Mixer(mixer_cmd) => {
-                        self.send_mixer_command_future(&id, mixer_cmd)
-                    }
-                }
+            Command::Connect {
+                link_id,
+                src_id,
+                sink_id,
+                config,
+            } => self.connect_future(&link_id, &src_id, &sink_id, config),
+            Command::Disconnect { link_id } => {
+                Box::pin(actix::fut::ready(self.disconnect(&link_id)))
             }
+            Command::CreateSource { id, uri } => {
+                Box::pin(actix::fut::ready(self.create_source(&id, &uri)))
+            }
+            Command::CreateDestination { id, family } => {
+                Box::pin(actix::fut::ready(self.create_destination(&id, &family)))
+            }
+            Command::CreateMixer { id, config } => {
+                Box::pin(actix::fut::ready(self.create_mixer(&id, config)))
+            }
+            Command::Start {
+                id,
+                cue_time,
+                end_time,
+            } => self.send_start_command_future(&id, cue_time, end_time),
+            Command::Reschedule {
+                id,
+                cue_time,
+                end_time,
+            } => self.send_schedule_command_future(&id, cue_time, end_time),
+            Command::Remove { id } => Box::pin(actix::fut::ready(self.stop_node(&id))),
+            Command::GetInfo { id } => self.get_info_future(id.as_ref()),
+            Command::AddControlPoint {
+                controllee_id,
+                property,
+                control_point,
+            } => self.control_property_future(controllee_id, property, control_point),
+            Command::RemoveControlPoint {
+                id,
+                controllee_id,
+                property,
+            } => Box::pin(actix::fut::ready(self.remove_control_point(
+                &id,
+                &controllee_id,
+                &property,
+            ))),
         }
     }
 }

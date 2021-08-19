@@ -14,9 +14,9 @@ use tracing::{debug, error, instrument, trace};
 use auteur_controlling::controller::{ControlPoint, MixerInfo, MixerSlotInfo, NodeInfo, State};
 
 use crate::node::{
-    AddControlPointMessage, ConsumerMessage, GetNodeInfoMessage, GetProducerMessage,
-    MixerCommandMessage, NodeManager, NodeStatusMessage, RemoveControlPointMessage,
-    ScheduleMessage, StartMessage, StopMessage, StoppedMessage,
+    AddControlPointMessage, ConsumerMessage, GetNodeInfoMessage, GetProducerMessage, NodeManager,
+    NodeStatusMessage, RemoveControlPointMessage, ScheduleMessage, StartMessage, StopMessage,
+    StoppedMessage,
 };
 use crate::utils::{
     get_now, make_element, ErrorMessage, PipelineManager, PropertyController, Schedulable, Setting,
@@ -1165,14 +1165,6 @@ impl Handler<StartMessage> for Mixer {
 
     fn handle(&mut self, msg: StartMessage, ctx: &mut Context<Self>) -> Self::Result {
         MessageResult(self.start_schedule(ctx, msg.cue_time, msg.end_time))
-    }
-}
-
-impl Handler<MixerCommandMessage> for Mixer {
-    type Result = MessageResult<MixerCommandMessage>;
-
-    fn handle(&mut self, _msg: MixerCommandMessage, _ctx: &mut Context<Self>) -> Self::Result {
-        MessageResult(Ok(()))
     }
 }
 
