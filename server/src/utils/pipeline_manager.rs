@@ -158,6 +158,19 @@ impl StreamHandler<BusMessage> for PipelineManager {
                     let _ = eos_sender.send(());
                 }
             }
+            MessageView::StateChanged(state_changed) => {
+                if Some(self.pipeline.upcast_ref()) == state_changed.src().as_ref() {
+                    self.pipeline.debug_to_dot_file_with_ts(
+                        gst::DebugGraphDetails::all(),
+                        format!(
+                            "state-change-{}-{:?}-to-{:?}",
+                            self.id,
+                            state_changed.old(),
+                            state_changed.current()
+                        ),
+                    );
+                }
+            }
             _ => (),
         }
     }
