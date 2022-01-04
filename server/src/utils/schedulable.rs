@@ -245,7 +245,8 @@ where
         let machine = self.state_machine_mut();
 
         if let Some(cue_time) = new_cue_time {
-            if let Some(end_time) = new_end_time.as_ref().or_else(|| machine.end_time.as_ref()) {
+            #[allow(clippy::or_fun_call)]
+            if let Some(end_time) = new_end_time.as_ref().or(machine.end_time.as_ref()) {
                 if end_time <= cue_time {
                     return Err(anyhow!("end_time {} <= cue_time {}", end_time, cue_time));
                 }
@@ -253,7 +254,8 @@ where
         }
 
         if let Some(end_time) = new_end_time {
-            if let Some(cue_time) = new_cue_time.as_ref().or_else(|| machine.cue_time.as_ref()) {
+            #[allow(clippy::or_fun_call)]
+            if let Some(cue_time) = new_cue_time.as_ref().or(machine.cue_time.as_ref()) {
                 if end_time <= cue_time {
                     return Err(anyhow!("end_time {} <= cue_time {}", end_time, cue_time));
                 }

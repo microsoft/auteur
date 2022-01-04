@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+fn default_as_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 /// Defines how a property should be controlled
@@ -57,6 +61,12 @@ pub enum Command {
         id: String,
         /// URI to play back
         uri: String,
+        /// Whether the source should produce audio, default true
+        #[serde(default = "default_as_true")]
+        audio: bool,
+        /// Whether the source should produce video, default true
+        #[serde(default = "default_as_true")]
+        video: bool,
     },
     /// Create a destination
     ///
@@ -66,6 +76,12 @@ pub enum Command {
         id: String,
         /// Type of the destination
         family: DestinationFamily,
+        /// Whether the destination should consume audio, default true
+        #[serde(default = "default_as_true")]
+        audio: bool,
+        /// Whether the destination should consume video, default true
+        #[serde(default = "default_as_true")]
+        video: bool,
     },
     /// Create a mixer
     ///
@@ -85,6 +101,12 @@ pub enum Command {
         /// * fallback-image, String, default ""
         /// * fallback-timeout (ms), i32, 1 -> 2147483647, default 500, controllable
         config: Option<HashMap<String, serde_json::Value>>,
+        /// Whether the mixer should mix audio, default true
+        #[serde(default = "default_as_true")]
+        audio: bool,
+        /// Whether the mixer should mix video, default true
+        #[serde(default = "default_as_true")]
+        video: bool,
     },
     /// Connect a producer with a consumer
     Connect {
@@ -94,6 +116,12 @@ pub enum Command {
         src_id: String,
         /// Identifier of an existing consumer
         sink_id: String,
+        /// Whether the audio stream should be connected, default true
+        #[serde(default = "default_as_true")]
+        audio: bool,
+        /// Whether the video stream should be connected, default true
+        #[serde(default = "default_as_true")]
+        video: bool,
         /// Initial configuration of the consumer slot
         ///
         /// Check out the documentation for the node creation function
@@ -209,8 +237,10 @@ pub enum DestinationFamily {
 pub struct SourceInfo {
     /// The URI played back by the source
     pub uri: String,
-    /// The identifiers of the consumers of the source
-    pub consumer_slot_ids: Vec<String>,
+    /// The identifiers of the video consumers of the source
+    pub video_consumer_slot_ids: Option<Vec<String>>,
+    /// The identifiers of the audio consumers of the source
+    pub audio_consumer_slot_ids: Option<Vec<String>>,
     /// When the source was scheduled to start
     pub cue_time: Option<DateTime<Utc>>,
     /// When the source was scheduled to end
@@ -225,8 +255,10 @@ pub struct SourceInfo {
 pub struct DestinationInfo {
     /// The type of the destination
     pub family: DestinationFamily,
-    /// The identifier of the destination's input slot
-    pub slot_id: Option<String>,
+    /// The identifier of the destination's input audio slot
+    pub audio_slot_id: Option<String>,
+    /// The identifier of the destination's input video slot
+    pub video_slot_id: Option<String>,
     /// When the destination was scheduled to start
     pub cue_time: Option<DateTime<Utc>>,
     /// When the destination was scheduled to end
@@ -249,8 +281,10 @@ pub struct MixerSlotInfo {
 pub struct MixerInfo {
     /// The mixer's input slots
     pub slots: HashMap<String, MixerSlotInfo>,
-    /// The identifiers of the consumers of the mixer
-    pub consumer_slot_ids: Vec<String>,
+    /// The identifiers of the video consumers of the mixer
+    pub video_consumer_slot_ids: Option<Vec<String>>,
+    /// The identifiers of the audio consumers of the mixer
+    pub audio_consumer_slot_ids: Option<Vec<String>>,
     /// When the mixer was scheduled to start
     pub cue_time: Option<DateTime<Utc>>,
     /// When the mixer was scheduled to end
