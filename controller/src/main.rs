@@ -89,6 +89,12 @@ enum NodeSubCommand {
         src_id: String,
         /// The id of an existing consumer node
         sink_id: String,
+        /// Don't connect audio
+        #[clap(long)]
+        disable_audio: bool,
+        /// Don't connect video
+        #[clap(long)]
+        disable_video: bool,
         /// Initial configuration of the consumer slot
         #[clap(parse(try_from_str = parse_config))]
         config: Vec<(String, serde_json::Value)>,
@@ -166,9 +172,21 @@ enum CreateNodeSubCommand {
         id: String,
         /// The URI of the source
         uri: String,
+        /// Don't produce audio
+        #[clap(long)]
+        disable_audio: bool,
+        /// Don't produce video
+        #[clap(long)]
+        disable_video: bool,
     },
     /// Create a new destination
     Destination {
+        /// Don't consume audio
+        #[clap(long)]
+        disable_audio: bool,
+        /// Don't consume video
+        #[clap(long)]
+        disable_video: bool,
         #[clap(subcommand)]
         subcmd: CreateDestinationSubCommand,
     },
@@ -179,6 +197,12 @@ enum CreateNodeSubCommand {
         /// Initial configuration of the mixer
         #[clap(parse(try_from_str = parse_config))]
         config: Vec<(String, serde_json::Value)>,
+        /// Don't mix audio
+        #[clap(long)]
+        disable_audio: bool,
+        /// Don't mix video
+        #[clap(long)]
+        disable_video: bool,
     },
 }
 
@@ -240,12 +264,28 @@ fn main() -> Result<(), Error> {
         let command = match opts.subcmd {
             SubCommand::Node { subcmd } => match subcmd {
                 NodeSubCommand::Create { subcmd } => match subcmd {
-                    CreateNodeSubCommand::Source { id, uri } => Command::CreateSource { id, uri },
-                    CreateNodeSubCommand::Destination { subcmd } => match subcmd {
+                    CreateNodeSubCommand::Source {
+                        disable_audio,
+                        disable_video,
+                        id,
+                        uri,
+                    } => Command::CreateSource {
+                        id,
+                        uri,
+                        audio: !disable_audio,
+                        video: !disable_video,
+                    },
+                    CreateNodeSubCommand::Destination {
+                        disable_audio,
+                        disable_video,
+                        subcmd,
+                    } => match subcmd {
                         CreateDestinationSubCommand::Rtmp { id, uri } => {
                             Command::CreateDestination {
                                 id,
                                 family: DestinationFamily::Rtmp { uri },
+                                audio: !disable_audio,
+                                video: !disable_video,
                             }
                         }
                         CreateDestinationSubCommand::LocalFile {
@@ -258,28 +298,43 @@ fn main() -> Result<(), Error> {
                                 base_name,
                                 max_size_time,
                             },
+                            audio: !disable_audio,
+                            video: !disable_video,
                         },
                         CreateDestinationSubCommand::LocalPlayback { id } => {
                             Command::CreateDestination {
                                 id,
                                 family: DestinationFamily::LocalPlayback,
+                                audio: !disable_audio,
+                                video: !disable_video,
                             }
                         }
                     },
-                    CreateNodeSubCommand::Mixer { id, config } => Command::CreateMixer {
+                    CreateNodeSubCommand::Mixer {
+                        id,
+                        config,
+                        disable_audio,
+                        disable_video,
+                    } => Command::CreateMixer {
                         id,
                         config: Some(config.into_iter().collect()),
+                        audio: !disable_audio,
+                        video: !disable_video,
                     },
                 },
                 NodeSubCommand::Connect {
                     link_id,
                     src_id,
                     sink_id,
+                    disable_audio,
+                    disable_video,
                     config,
                 } => Command::Connect {
                     link_id,
                     src_id,
                     sink_id,
+                    audio: !disable_audio,
+                    video: !disable_video,
                     config: Some(config.into_iter().collect()),
                 },
                 NodeSubCommand::Disconnect { link_id } => Command::Disconnect { link_id },

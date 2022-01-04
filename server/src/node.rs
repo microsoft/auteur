@@ -48,6 +48,7 @@ use tracing_futures::Instrument;
 //
 // * all nodes that can produce data
 
+#[derive(Default)]
 pub struct NodeManager {
     /// All nodes by id
     nodes: HashMap<String, Node>,
@@ -84,7 +85,7 @@ impl Message for CommandMessage {
 pub struct GetProducerMessage;
 
 impl Message for GetProducerMessage {
-    type Result = Result<(StreamProducer, StreamProducer), Error>;
+    type Result = Result<(Option<StreamProducer>, Option<StreamProducer>), Error>;
 }
 
 /// Sent from [`NodeManager`] to any consumer node in order to
@@ -99,9 +100,9 @@ pub enum ConsumerMessage {
         /// The id of the slot
         link_id: String,
         /// The video producer to connect to
-        video_producer: StreamProducer,
+        video_producer: Option<StreamProducer>,
         /// The audio producer to connect to
-        audio_producer: StreamProducer,
+        audio_producer: Option<StreamProducer>,
         /// Initial configuration of the consumer slot
         config: Option<HashMap<String, serde_json::Value>>,
     },
@@ -355,19 +356,6 @@ impl Node {
     }
 }
 
-impl Default for NodeManager {
-    fn default() -> Self {
-        Self {
-            nodes: HashMap::new(),
-            links: HashMap::new(),
-            consumers: HashMap::new(),
-            producers: HashMap::new(),
-            listeners: HashMap::new(),
-            no_more_modes_sender: None,
-        }
-    }
-}
-
 impl Actor for NodeManager {
     type Context = Context<Self>;
 }
@@ -382,12 +370,19 @@ impl SystemService for NodeManager {
 
 impl NodeManager {
     /// Create a [`Source`] and store it as a producer
-    fn create_source(&mut self, id: &str, uri: &str) -> CommandResult {
+    fn create_source(&mut self, id: &str, uri: &str, audio: bool, video: bool) -> CommandResult {
         if self.nodes.contains_key(id) {
             return CommandResult::Error(format!("A node already exists with id {}", id));
         }
 
-        let source = Source::new(id, uri);
+        if !audio && !video {
+            return CommandResult::Error(format!(
+                "Source with id {} must have either audio or video enabled",
+                id
+            ));
+        }
+
+        let source = Source::new(id, uri, audio, video);
         let source_addr = source.start();
 
         self.nodes
@@ -402,12 +397,25 @@ impl NodeManager {
     }
 
     /// Create a [`Destination`] and store it as a consumer
-    fn create_destination(&mut self, id: &str, family: &DestinationFamily) -> CommandResult {
+    fn create_destination(
+        &mut self,
+        id: &str,
+        family: &DestinationFamily,
+        audio: bool,
+        video: bool,
+    ) -> CommandResult {
         if self.nodes.contains_key(id) {
             return CommandResult::Error(format!("A node already exists with id {}", id));
         }
 
-        let dest = Destination::new(id, family);
+        if !audio && !video {
+            return CommandResult::Error(format!(
+                "Destination with id {} must have either audio or video enabled",
+                id
+            ));
+        }
+
+        let dest = Destination::new(id, family, audio, video);
 
         let addr = dest.start();
 
@@ -425,12 +433,21 @@ impl NodeManager {
         &mut self,
         id: &str,
         config: Option<HashMap<String, serde_json::Value>>,
+        audio: bool,
+        video: bool,
     ) -> CommandResult {
         if self.nodes.contains_key(id) {
             return CommandResult::Error(format!("A node already exists with id {}", id));
         }
 
-        let mixer = match Mixer::new(id, config) {
+        if !audio && !video {
+            return CommandResult::Error(format!(
+                "Mixer with id {} must have either audio or video enabled",
+                id
+            ));
+        }
+
+        let mixer = match Mixer::new(id, config, audio, video) {
             Ok(mixer) => mixer,
             Err(err) => {
                 return CommandResult::Error(format!("Failed to create mixer: {}", err));
@@ -569,8 +586,19 @@ impl NodeManager {
         link_id: &str,
         src: &str,
         sink: &str,
+        audio: bool,
+        video: bool,
         config: Option<HashMap<String, serde_json::Value>>,
     ) -> ResponseActFuture<Self, CommandResult> {
+        if !audio && !video {
+            return Box::pin({
+                actix::fut::ready(CommandResult::Error(format!(
+                    "Link with id {} must have either audio or video enabled",
+                    link_id
+                )))
+            });
+        }
+
         let producer = match self.producers.get(src) {
             Some(producer) => producer.clone(),
             None => {
@@ -613,8 +641,8 @@ impl NodeManager {
                         consumer
                             .send(ConsumerMessage::Connect {
                                 link_id,
-                                video_producer,
-                                audio_producer,
+                                video_producer: if video { video_producer } else { None },
+                                audio_producer: if audio { audio_producer } else { None },
                                 config,
                             })
                             .in_current_span()
@@ -828,20 +856,37 @@ impl Handler<CommandMessage> for NodeManager {
                 link_id,
                 src_id,
                 sink_id,
+                audio,
+                video,
                 config,
-            } => self.connect_future(&link_id, &src_id, &sink_id, config),
+            } => self.connect_future(&link_id, &src_id, &sink_id, audio, video, config),
             Command::Disconnect { link_id } => {
                 Box::pin(actix::fut::ready(self.disconnect(&link_id)))
             }
-            Command::CreateSource { id, uri } => {
-                Box::pin(actix::fut::ready(self.create_source(&id, &uri)))
-            }
-            Command::CreateDestination { id, family } => {
-                Box::pin(actix::fut::ready(self.create_destination(&id, &family)))
-            }
-            Command::CreateMixer { id, config } => {
-                Box::pin(actix::fut::ready(self.create_mixer(&id, config)))
-            }
+            Command::CreateSource {
+                id,
+                uri,
+                audio,
+                video,
+            } => Box::pin(actix::fut::ready(
+                self.create_source(&id, &uri, audio, video),
+            )),
+            Command::CreateDestination {
+                id,
+                family,
+                audio,
+                video,
+            } => Box::pin(actix::fut::ready(
+                self.create_destination(&id, &family, audio, video),
+            )),
+            Command::CreateMixer {
+                id,
+                config,
+                audio,
+                video,
+            } => Box::pin(actix::fut::ready(
+                self.create_mixer(&id, config, audio, video),
+            )),
             Command::Start {
                 id,
                 cue_time,
@@ -883,7 +928,7 @@ impl Handler<StoppedMessage> for NodeManager {
 
         self.disconnect_consumers(msg.video_producer, msg.audio_producer);
 
-        debug!("mixer {} removed from NodeManager", msg.id);
+        debug!("node {} removed from NodeManager", msg.id);
 
         MessageResult(())
     }
@@ -939,5 +984,85 @@ impl Handler<NodeStatusMessage> for NodeManager {
     #[instrument(level = "trace", name = "notifying listeners", skip(self, _ctx))]
     fn handle(&mut self, msg: NodeStatusMessage, _ctx: &mut Context<Self>) -> Self::Result {
         self.notify_listeners(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::tests::*;
+    use test_env_log::test;
+
+    #[actix_rt::test]
+    #[test]
+    async fn test_connect() {
+        gst::init().unwrap();
+        let uri = asset_uri("ball.mp4");
+
+        // Create a valid source
+        create_source("test-source", &uri, true, true)
+            .await
+            .unwrap();
+        create_local_destination("test-dest", "foo", None)
+            .await
+            .unwrap();
+        connect("link", "test-source", "test-dest", true, true, None)
+            .await
+            .unwrap();
+
+        let info = node_info_unchecked("test-dest").await;
+
+        if let NodeInfo::Destination(dinfo) = info {
+            assert_eq!(dinfo.audio_slot_id, Some("link".to_string()));
+            assert_eq!(dinfo.video_slot_id, Some("link".to_string()));
+        } else {
+            panic!("Wrong info type");
+        }
+    }
+
+    #[actix_rt::test]
+    #[test]
+    async fn test_connect_video_only() {
+        gst::init().unwrap();
+        let uri = asset_uri("ball.mp4");
+
+        // Create a valid source
+        create_source("test-source", &uri, true, true)
+            .await
+            .unwrap();
+        create_local_destination("test-dest", "foo", None)
+            .await
+            .unwrap();
+        connect("link", "test-source", "test-dest", true, false, None)
+            .await
+            .unwrap();
+
+        let info = node_info_unchecked("test-dest").await;
+
+        if let NodeInfo::Destination(dinfo) = info {
+            assert_eq!(dinfo.audio_slot_id, None);
+            assert_eq!(dinfo.video_slot_id, Some("link".to_string()));
+        } else {
+            panic!("Wrong info type");
+        }
+    }
+
+    #[actix_rt::test]
+    #[test]
+    #[should_panic(expected = "link must result in at least one audio / video connection")]
+    async fn test_connect_invalid_audio_only() {
+        gst::init().unwrap();
+        let uri = asset_uri("ball.mp4");
+
+        // Create a valid source
+        create_source("test-source", &uri, true, false)
+            .await
+            .unwrap();
+        create_local_destination("test-dest", "foo", None)
+            .await
+            .unwrap();
+        connect("link", "test-source", "test-dest", false, true, None)
+            .await
+            .unwrap();
     }
 }

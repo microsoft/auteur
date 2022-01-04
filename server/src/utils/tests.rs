@@ -4,7 +4,7 @@ use anyhow::{anyhow, Error};
 use auteur_controlling::controller::{Command, CommandResult, DestinationFamily, NodeInfo, State};
 use chrono::{DateTime, Utc};
 use futures::channel::oneshot;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use tracing::error;
 
@@ -120,7 +120,7 @@ impl Handler<NodeStatusMessage> for StateListener {
 }
 
 /// Create a source
-pub async fn create_source(id: &str, uri: &str) -> Result<(), Error> {
+pub async fn create_source(id: &str, uri: &str, video: bool, audio: bool) -> Result<(), Error> {
     let manager = NodeManager::from_registry();
 
     match manager
@@ -128,6 +128,8 @@ pub async fn create_source(id: &str, uri: &str) -> Result<(), Error> {
             command: Command::CreateSource {
                 id: id.to_string(),
                 uri: uri.to_string(),
+                audio,
+                video,
             },
         })
         .await
@@ -151,6 +153,8 @@ pub async fn create_local_destination(
         .send(CommandMessage {
             command: Command::CreateDestination {
                 id: id.to_string(),
+                audio: true,
+                video: true,
                 family: DestinationFamily::LocalFile {
                     base_name: base_name.to_string(),
                     max_size_time,
@@ -265,4 +269,35 @@ pub async fn register_listener(
         .unwrap();
 
     listener_addr
+}
+
+/// Connect two nodes
+pub async fn connect(
+    link_id: &str,
+    src_id: &str,
+    sink_id: &str,
+    video: bool,
+    audio: bool,
+    config: Option<HashMap<String, serde_json::Value>>,
+) -> Result<(), Error> {
+    let manager = NodeManager::from_registry();
+
+    match manager
+        .send(CommandMessage {
+            command: Command::Connect {
+                link_id: link_id.to_string(),
+                src_id: src_id.to_string(),
+                sink_id: sink_id.to_string(),
+                audio,
+                video,
+                config,
+            },
+        })
+        .await
+        .unwrap()
+    {
+        CommandResult::Success => Ok(()),
+        CommandResult::Error(err) => Err(anyhow!(err)),
+        CommandResult::Info(_) => unreachable!(),
+    }
 }

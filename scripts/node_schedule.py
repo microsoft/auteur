@@ -11,22 +11,44 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EXE = os.path.join(HERE, '../target/debug/auteur-controller')
 SERVER = 'ws://127.0.0.1:8080/ws/control'
 
-def create_source(id_, uri):
+def create_source(id_, uri, disable_audio=False, disable_video=False):
     cmd = [EXE, SERVER, 'node', 'create', 'source', id_, uri]
 
+    if disable_audio:
+        cmd += ['--disable-audio']
+
+    if disable_video:
+        cmd += ['--disable-video']
+
     result = subprocess.check_output(cmd).decode().strip()
 
     print (result)
 
-def create_rtmp_destination(id_, uri):
-    cmd = [EXE, SERVER, 'node', 'create', 'destination', 'rtmp', id_, uri]
+def create_rtmp_destination(id_, uri, disable_audio=False, disable_video=False):
+    cmd = [EXE, SERVER, 'node', 'create', 'destination']
+
+    if disable_audio:
+        cmd += ['--disable-audio']
+
+    if disable_video:
+        cmd += ['--disable-video']
+
+    cmd += ['rtmp', id_, uri]
 
     result = subprocess.check_output(cmd).decode().strip()
 
     print (result)
 
-def create_local_file_destination(id_, basename, max_size_time=None):
-    cmd = [EXE, SERVER, 'node', 'create', 'destination', 'local-file', id_, basename]
+def create_local_file_destination(id_, basename, max_size_time=None, disable_audio=False, disable_video=False):
+    cmd = [EXE, SERVER, 'node', 'create', 'destination']
+
+    if disable_audio:
+        cmd += ['--disable-audio']
+
+    if disable_video:
+        cmd += ['--disable-video']
+
+    cmd += ['local-file', id_, basename]
 
     if max_size_time is not None:
         cmd += ['--max-size-time', str(max_size_time)]
@@ -35,14 +57,22 @@ def create_local_file_destination(id_, basename, max_size_time=None):
 
     print (result)
 
-def create_local_playback_destination(id_):
-    cmd = [EXE, SERVER, 'node', 'create', 'destination', 'local-playback', id_]
+def create_local_playback_destination(id_, disable_audio=False, disable_video=False):
+    cmd = [EXE, SERVER, 'node', 'create', 'destination']
+
+    if disable_audio:
+        cmd += ['--disable-audio']
+
+    if disable_video:
+        cmd += ['--disable-video']
+
+    cmd += ['local-playback', id_]
 
     result = subprocess.check_output(cmd).decode().strip()
 
     print (result)
 
-def create_mixer(id_, config=None):
+def create_mixer(id_, config=None, disable_audio=False, disable_video=False):
     cmd = [EXE, SERVER, 'node', 'create', 'mixer', id_]
 
     if config is not None:
@@ -51,6 +81,12 @@ def create_mixer(id_, config=None):
                 cmd += ['%s=\"%s\"' % (str(key), str(value))]
             else:
                 cmd += ['%s=%s' % (str(key), str(value))]
+
+    if disable_audio:
+        cmd += ['--disable-audio']
+
+    if disable_video:
+        cmd += ['--disable-video']
 
     result = subprocess.check_output(cmd).decode().strip()
 
@@ -84,9 +120,15 @@ def start_node(id_, cue_time=None, end_time=None):
     result = subprocess.check_output(cmd).decode().strip()
     print (result)
 
-def connect(src_id, sink_id, config=None):
+def connect(src_id, sink_id, config=None, disable_audio=False, disable_video=False):
     link_id = '%s->%s_%s' % (src_id, sink_id, str(uuid.uuid4()))
     cmd = [EXE, SERVER, 'node', 'connect', link_id, src_id, sink_id]
+
+    if disable_audio:
+        cmd += ['--disable-audio']
+
+    if disable_video:
+        cmd += ['--disable-video']
 
     if config is not None:
         for key, value in config.items():
@@ -126,9 +168,9 @@ def remove_node(id_):
     result = subprocess.check_output(cmd).decode().strip()
     print (result)
 
-def schedule_source(uri, src_id, dst_id, cue_time=None, end_time=None, slot_config=None):
-    create_source(src_id, uri)
-    link_id = connect(src_id, dst_id, config=slot_config)
+def schedule_source(uri, src_id, dst_id, cue_time=None, end_time=None, slot_config=None, connect_audio=True, connect_video=True, disable_audio=False, disable_video=False):
+    create_source(src_id, uri, disable_audio=disable_audio, disable_video=disable_video)
+    link_id = connect(src_id, dst_id, config=slot_config, disable_audio=not connect_audio, disable_video=not connect_video)
     start_node(src_id, cue_time, end_time)
     return link_id
 
