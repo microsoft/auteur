@@ -40,11 +40,9 @@ impl StreamProducer {
 
         debug!(appsink = %self.appsink.name(), appsrc = %consumer.name(), "Adding consumer");
 
-        consumer.set_property("max-buffers", 0u64).unwrap();
-        consumer.set_property("max-bytes", 0u64).unwrap();
-        consumer
-            .set_property("max-time", 500 * gst::MSECOND)
-            .unwrap();
+        consumer.set_property("max-buffers", 0u64);
+        consumer.set_property("max-bytes", 0u64);
+        consumer.set_property("max-time", 500 * gst::ClockTime::MSECOND);
         consumer.set_property_from_str("leaky-type", "downstream");
 
         // Forward force-keyunit events upstream to the appsink
@@ -157,7 +155,7 @@ impl<'a> From<&'a gst_app::AppSink> for StreamProducer {
                                     .is_ok()
                                     || latency_updated
                                 {
-                                    c.appsrc.set_latency(latency, gst::CLOCK_TIME_NONE);
+                                    c.appsrc.set_latency(latency, gst::ClockTime::NONE);
                                 }
                             }
 

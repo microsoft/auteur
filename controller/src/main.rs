@@ -2,7 +2,7 @@
 
 use anyhow::Error;
 use chrono::{DateTime, Utc};
-use clap::{AppSettings, Clap};
+use clap::{ArgEnum, Parser, Subcommand};
 use std::path::PathBuf;
 
 mod controller;
@@ -10,9 +10,8 @@ use controller::Controller;
 
 use auteur_controlling::controller::{Command, ControlMode, ControlPoint, DestinationFamily};
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 #[clap(author = "Mathieu Duponchelle <mathieu@centricular.com>")]
-#[clap(setting = AppSettings::ColoredHelp)]
 /// Top-level options
 struct Opts {
     /// Address of the Auteur server, e.g. https://localhost:8080
@@ -25,7 +24,7 @@ struct Opts {
 }
 
 /// Top-level subcommands
-#[derive(Clap, Debug)]
+#[derive(Subcommand, Debug)]
 enum SubCommand {
     /// Create and connect nodes
     Node {
@@ -34,7 +33,7 @@ enum SubCommand {
     },
 }
 
-#[derive(Clap, Debug)]
+#[derive(ArgEnum, Debug, Clone)]
 enum ArgControlMode {
     Interpolate,
     Set,
@@ -74,7 +73,7 @@ where
 }
 
 /// Create and connect nodes
-#[derive(Clap, Debug)]
+#[derive(Subcommand, Debug)]
 enum NodeSubCommand {
     /// Create a new node
     Create {
@@ -164,7 +163,7 @@ enum NodeSubCommand {
 }
 
 /// Node-specific creation commands
-#[derive(Clap, Debug)]
+#[derive(Subcommand, Debug)]
 enum CreateNodeSubCommand {
     /// Create a new source
     Source {
@@ -207,7 +206,7 @@ enum CreateNodeSubCommand {
 }
 
 /// Create a destination
-#[derive(Clap, Debug)]
+#[derive(Subcommand, Debug)]
 enum CreateDestinationSubCommand {
     /// Create a new RTMP destination
     Rtmp {
@@ -234,18 +233,6 @@ enum CreateDestinationSubCommand {
     },
 }
 
-/// Source-specific commands
-#[derive(Clap, Debug)]
-enum SourceSubCommand {}
-
-/// Destination-specific commands
-#[derive(Clap, Debug)]
-enum DestinationSubCommand {}
-
-/// Mixer-specific commands
-#[derive(Clap, Debug)]
-enum MixerSubCommand {}
-
 /// Client application entry point
 fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
@@ -255,8 +242,7 @@ fn main() -> Result<(), Error> {
         .write_style("AUTEUR_CONTROLLER_LOG_STYLE");
     env_logger::init_from_env(env);
 
-    let mut runtime = tokio::runtime::Builder::new()
-        .basic_scheduler()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 

@@ -179,13 +179,11 @@ impl Source {
         let src = make_element("fallbacksrc", None)?;
         pipeline.add(&src)?;
 
-        src.set_property("uri", &self.uri).unwrap();
-        src.set_property("manual-unblock", &true).unwrap();
-        src.set_property("immediate-fallback", &true).unwrap();
-        src.set_property("enable-audio", &self.audio_producer.is_some())
-            .unwrap();
-        src.set_property("enable-video", &self.video_producer.is_some())
-            .unwrap();
+        src.set_property("uri", &self.uri);
+        src.set_property("manual-unblock", &true);
+        src.set_property("immediate-fallback", &true);
+        src.set_property("enable-audio", &self.audio_producer.is_some());
+        src.set_property("enable-video", &self.video_producer.is_some());
 
         let pipeline_clone = pipeline.downgrade();
         let addr = ctx.address();
@@ -234,15 +232,13 @@ impl Source {
         src.connect("notify::status", false, move |_args| {
             let _ = addr_clone.do_send(SourceStatusMessage);
             None
-        })
-        .unwrap();
+        });
 
         let addr_clone = ctx.address();
         src.connect("notify::statistics", false, move |_args| {
             let _ = addr_clone.do_send(SourceStatusMessage);
             None
-        })
-        .unwrap();
+        });
 
         let src_bin: &gst::Bin = src.downcast_ref().unwrap();
 
@@ -291,7 +287,7 @@ impl Source {
     fn unblock(&mut self, ctx: &mut Context<Self>) -> Result<StateChangeResult, Error> {
         let media = self.media.as_ref().unwrap();
 
-        media.src.emit_by_name("unblock", &[]).unwrap();
+        media.src.emit_by_name::<()>("unblock", &[]);
 
         if let Some(ref producer) = self.video_producer {
             producer.forward();
@@ -309,8 +305,7 @@ impl Source {
             move |s, _ctx| {
                 if let Some(ref media) = s.media {
                     if let Some(ref source_bin) = media.source_bin {
-                        let val = source_bin.property("statistics").unwrap();
-                        let s = val.get::<gst::Structure>().unwrap();
+                        let s = source_bin.property::<gst::Structure>("statistics");
 
                         trace!(id = %id_clone, "source statistics: {}", s.to_string());
                     }
@@ -345,20 +340,16 @@ impl Source {
     fn monitor_switch(&mut self, ctx: &mut Context<Self>, switch: gst::Element) {
         if let Some(ref mut media) = self.media {
             let addr_clone = ctx.address();
-            switch
-                .connect("notify::primary-health", false, move |_args| {
-                    let _ = addr_clone.do_send(SourceStatusMessage);
-                    None
-                })
-                .unwrap();
+            switch.connect("notify::primary-health", false, move |_args| {
+                let _ = addr_clone.do_send(SourceStatusMessage);
+                None
+            });
 
             let addr_clone = ctx.address();
-            switch
-                .connect("notify::fallback-health", false, move |_args| {
-                    let _ = addr_clone.do_send(SourceStatusMessage);
-                    None
-                })
-                .unwrap();
+            switch.connect("notify::fallback-health", false, move |_args| {
+                let _ = addr_clone.do_send(SourceStatusMessage);
+                None
+            });
 
             media.switches.push(switch);
         }
@@ -368,12 +359,12 @@ impl Source {
     #[instrument(level = "trace", name = "new-source-status", skip(self), fields(id = %self.id))]
     fn log_source_status(&mut self) {
         if let Some(ref media) = self.media {
-            let value = media.src.property("status").unwrap();
+            let value = media.src.property("status");
             let status = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
-            trace!("Source status: {}", status.nick());
+            trace!("Source status: {}", status.1.nick());
             trace!(
                 "Source statistics: {:?}",
-                media.src.property("statistics").unwrap()
+                media.src.property::<gst::Structure>("statistics")
             );
 
             for switch in &media.switches {
@@ -385,13 +376,17 @@ impl Source {
                     None => "ANY",
                 };
 
-                let value = switch.property("primary-health").unwrap();
+                let value = switch.property_value("primary-health");
                 let health = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
-                trace!("switch {} primary health: {}", switch_name, health.nick());
+                trace!("switch {} primary health: {}", switch_name, health.1.nick());
 
-                let value = switch.property("fallback-health").unwrap();
+                let value = switch.property_value("fallback-health");
                 let health = gst::glib::EnumValue::from_value(&value).expect("Not an enum type");
-                trace!("switch {} fallback health: {}", switch_name, health.nick());
+                trace!(
+                    "switch {} fallback health: {}",
+                    switch_name,
+                    health.1.nick()
+                );
             }
         }
     }
@@ -665,7 +660,7 @@ mod tests {
     use crate::utils::get_now;
     use crate::utils::tests::*;
     use std::collections::VecDeque;
-    use test_env_log::test;
+    use test_log::test;
 
     #[actix_rt::test]
     #[test]

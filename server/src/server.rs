@@ -5,7 +5,7 @@ use crate::controller::Controller;
 use crate::node::{NodeManager, StopMessage};
 
 use actix::SystemService;
-use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{error, web, App, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 
 use tracing::error;
@@ -20,7 +20,7 @@ async fn ws(
         "control" => {
             let controller = Controller::new(&req.connection_info()).map_err(|err| {
                 error!("Failed to create controller: {}", err);
-                HttpResponse::InternalServerError()
+                error::ErrorInternalServerError(err)
             })?;
 
             ws::start(controller, &req, stream)

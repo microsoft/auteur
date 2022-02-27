@@ -68,27 +68,28 @@ impl PropertyController {
     ///
     /// This function returns whether control points are still pending
     #[instrument(level = "trace", name = "synchronizing controller", skip(self), fields(id = %self.controllee_id, propname = %self.propname))]
-    pub fn synchronize(&mut self, now: DateTime<Utc>, duration: gst::ClockTime) -> bool {
+    pub fn synchronize(&mut self, now: DateTime<Utc>, duration: Option<gst::ClockTime>) -> bool {
         let mut control_points = self.control_points.take().unwrap();
 
         if let Some((_id, Reverse(point))) = control_points.peek() {
             let mut do_trace = false;
 
-            let initial = self.obj.property(self.propname.as_str()).unwrap();
+            let initial = self.obj.property_value(self.propname.as_str());
             if match point.mode {
-                ControlMode::Interpolate => match duration {
-                    gst::CLOCK_TIME_NONE => false,
-                    _ => {
+                ControlMode::Interpolate => {
+                    if let Some(duration) = duration {
                         do_trace = true;
                         PropertyController::interpolate_property(
                             &self.obj,
                             now,
-                            duration.nseconds().unwrap(),
+                            duration.nseconds(),
                             &self.propname,
                             point,
                         )
+                    } else {
+                        false
                     }
-                },
+                }
                 ControlMode::Set => {
                     PropertyController::set_property(&self.obj, now, &self.propname, point)
                 }
@@ -98,7 +99,7 @@ impl PropertyController {
             }
 
             if do_trace {
-                let new = self.obj.property(self.propname.as_str()).unwrap();
+                let new = self.obj.property_value(self.propname.as_str());
 
                 trace!(obj = %self.obj.name(), property = %self.propname, "Synchronized controller: {:?} -> {:?}", initial, new);
             }
@@ -470,7 +471,7 @@ impl PropertyController {
         property: &str,
         point: &ControlPoint,
     ) -> bool {
-        let current = obj.property(property).unwrap();
+        let current = obj.property_value(property);
 
         let period = if point.time < now {
             duration
@@ -489,7 +490,7 @@ impl PropertyController {
                     .mul_div_round(duration as i64, period as i64)
                     .unwrap();
 
-                obj.set_property(property, (current + step) as i32).unwrap();
+                obj.set_property(property, (current + step) as i32);
             }
             Type::U32 => {
                 let current: i64 = current.get::<u32>().unwrap() as i64;
@@ -499,7 +500,7 @@ impl PropertyController {
                     .mul_div_round(duration as i64, period as i64)
                     .unwrap();
 
-                obj.set_property(property, (current + step) as u32).unwrap();
+                obj.set_property(property, (current + step) as u32);
             }
             Type::I_LONG | Type::I64 => {
                 let current: i64 = current.get().unwrap();
@@ -511,13 +512,13 @@ impl PropertyController {
                         .mul_div_round(duration as i64, period as i64)
                         .unwrap();
 
-                    obj.set_property(property, (current + step) as i64).unwrap();
+                    obj.set_property(property, (current + step) as i64);
                 } else {
                     let step = (current - target)
                         .mul_div_round(duration as i64, period as i64)
                         .unwrap();
 
-                    obj.set_property(property, (current - step) as i64).unwrap();
+                    obj.set_property(property, (current - step) as i64);
                 }
             }
             Type::U_LONG | Type::U64 => {
@@ -528,11 +529,11 @@ impl PropertyController {
                 if target >= current {
                     let step = (target - current).mul_div_round(duration, period).unwrap();
 
-                    obj.set_property(property, (current + step) as u64).unwrap();
+                    obj.set_property(property, (current + step) as u64);
                 } else {
                     let step = (current - target).mul_div_round(duration, period).unwrap();
 
-                    obj.set_property(property, (current - step) as u64).unwrap();
+                    obj.set_property(property, (current - step) as u64);
                 }
             }
             Type::F32 => {
@@ -551,7 +552,7 @@ impl PropertyController {
                         new
                     };
 
-                obj.set_property(property, new as f32).unwrap();
+                obj.set_property(property, new as f32);
             }
             Type::F64 => {
                 let current: f64 = current.get().unwrap();
@@ -569,7 +570,7 @@ impl PropertyController {
                         new
                     };
 
-                obj.set_property(property, new).unwrap();
+                obj.set_property(property, new);
             }
             _ => unreachable!(),
         }
@@ -587,42 +588,42 @@ impl PropertyController {
             Type::STRING => {
                 let target = value.as_str().unwrap();
 
-                obj.set_property(property, target).unwrap();
+                obj.set_property(property, target);
             }
             Type::BOOL => {
                 let target = value.as_bool().unwrap();
 
-                obj.set_property(property, target).unwrap();
+                obj.set_property(property, target);
             }
             Type::I32 => {
                 let target = value.as_i64().unwrap();
 
-                obj.set_property(property, target as i32).unwrap();
+                obj.set_property(property, target as i32);
             }
             Type::U32 => {
                 let target = value.as_i64().unwrap();
 
-                obj.set_property(property, target as u32).unwrap();
+                obj.set_property(property, target as u32);
             }
             Type::I_LONG | Type::I64 => {
                 let target = value.as_i64().unwrap();
 
-                obj.set_property(property, target as i64).unwrap();
+                obj.set_property(property, target as i64);
             }
             Type::U_LONG | Type::U64 => {
                 let target = value.as_u64().unwrap();
 
-                obj.set_property(property, target as u64).unwrap();
+                obj.set_property(property, target as u64);
             }
             Type::F32 => {
                 let target = value.as_f64().unwrap();
 
-                obj.set_property(property, target as f32).unwrap();
+                obj.set_property(property, target as f32);
             }
             Type::F64 => {
                 let target = value.as_f64().unwrap();
 
-                obj.set_property(property, target as f64).unwrap();
+                obj.set_property(property, target as f64);
             }
             _ => {
                 if pspec.downcast_ref::<gst::glib::ParamSpecEnum>().is_some() {
@@ -654,7 +655,7 @@ impl PropertyController {
     pub fn properties(obj: &gst::Object, prefix: &str) -> HashMap<String, serde_json::Value> {
         let mut ret = HashMap::new();
 
-        for pspec in obj.list_properties() {
+        for pspec in obj.list_properties().iter() {
             if !pspec.flags().contains(gst::glib::ParamFlags::READABLE) {
                 continue;
             }
@@ -667,7 +668,7 @@ impl PropertyController {
                 continue;
             }
 
-            let prop_value = obj.property(pspec.name()).unwrap();
+            let prop_value = obj.property_value(pspec.name());
 
             let value = match pspec.value_type() {
                 Type::STRING => prop_value.get::<String>().unwrap().into(),
@@ -798,7 +799,7 @@ pub mod tests {
         gst::init().unwrap();
 
         let queue = make_element("queue", None).unwrap();
-        queue.set_property("max-size-bytes", &10u32).unwrap();
+        queue.set_property("max-size-bytes", &10u32);
         let now = get_now();
         let point = ControlPoint {
             id: "test-controller".to_string(),
@@ -815,62 +816,34 @@ pub mod tests {
 
         controller.push_control_point(point);
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            10
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 10);
 
-        assert_eq!(controller.synchronize(now, gst::CLOCK_TIME_NONE), false);
+        assert_eq!(controller.synchronize(now, gst::ClockTime::NONE), false);
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            10
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 10);
 
         assert_eq!(
             controller.synchronize(
                 now + chrono::Duration::nanoseconds(1),
-                gst::ClockTime::from_nseconds(1)
+                Some(gst::ClockTime::from_nseconds(1))
             ),
             false
         );
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            10
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 10);
 
         // Control point should be consumed
         assert_eq!(
             controller.synchronize(
                 now + chrono::Duration::nanoseconds(2),
-                gst::ClockTime::from_nseconds(1)
+                Some(gst::ClockTime::from_nseconds(1))
             ),
             true
         );
 
         assert!(controller.control_points().is_empty());
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            0
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 0);
     }
 
     #[test]
@@ -878,7 +851,7 @@ pub mod tests {
         gst::init().unwrap();
 
         let queue = make_element("queue", None).unwrap();
-        queue.set_property("max-size-bytes", &10u32).unwrap();
+        queue.set_property("max-size-bytes", &10u32);
         let now = get_now();
         let point = ControlPoint {
             id: "test-controller".to_string(),
@@ -895,61 +868,33 @@ pub mod tests {
 
         controller.push_control_point(point);
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            10
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 10);
 
-        assert_eq!(controller.synchronize(now, gst::CLOCK_TIME_NONE), false);
+        assert_eq!(controller.synchronize(now, gst::ClockTime::NONE), false);
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            10
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 10);
 
         assert_eq!(
             controller.synchronize(
                 now + chrono::Duration::nanoseconds(1),
-                gst::ClockTime::from_nseconds(1)
+                Some(gst::ClockTime::from_nseconds(1))
             ),
             false
         );
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            5
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 5);
 
         // Control point should be consumed
         assert_eq!(
             controller.synchronize(
                 now + chrono::Duration::nanoseconds(2),
-                gst::ClockTime::from_nseconds(1)
+                Some(gst::ClockTime::from_nseconds(1))
             ),
             true
         );
 
         assert!(controller.control_points().is_empty());
 
-        assert_eq!(
-            queue
-                .property("max-size-bytes")
-                .unwrap()
-                .get::<u32>()
-                .unwrap(),
-            0
-        );
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 0);
     }
 }
