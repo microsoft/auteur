@@ -991,7 +991,7 @@ impl Handler<NodeStatusMessage> for NodeManager {
 mod tests {
     use super::*;
     use crate::utils::tests::*;
-    use test_env_log::test;
+    use test_log::test;
 
     #[actix_rt::test]
     #[test]

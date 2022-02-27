@@ -50,7 +50,7 @@ struct ConsumerSlot {
 #[derive(Debug)]
 pub struct VideoMixingState {
     /// For how long no pad other than our base plate has selected samples
-    base_plate_timeout: gst::ClockTime,
+    base_plate_timeout: Option<gst::ClockTime>,
     /// Whether our base plate is opaque
     showing_base_plate: bool,
     /// Our slot controllers
@@ -58,7 +58,7 @@ pub struct VideoMixingState {
     /// Our controllers (width, height, ...)
     mixer_controllers: Option<HashMap<String, SettingController>>,
     /// The last observed PTS, for interpolating
-    last_pts: gst::ClockTime,
+    last_pts: Option<gst::ClockTime>,
     /// For resizing our output video stream
     capsfilter: Option<gst::Element>,
 }
@@ -69,7 +69,7 @@ pub struct AudioMixingState {
     /// Our slot controllers
     slot_controllers: Option<HashMap<String, PropertyController>>,
     /// The last observed PTS, for interpolating
-    last_pts: gst::ClockTime,
+    last_pts: Option<gst::ClockTime>,
 }
 
 /// One audio or video output branch
@@ -121,11 +121,11 @@ impl VideoOutput {
                 id,
             },
             mixing_state: Arc::new(Mutex::new(VideoMixingState {
-                base_plate_timeout: gst::CLOCK_TIME_NONE,
+                base_plate_timeout: gst::ClockTime::NONE,
                 showing_base_plate: false,
                 slot_controllers: Some(HashMap::new()),
                 mixer_controllers: Some(HashMap::new()),
-                last_pts: gst::CLOCK_TIME_NONE,
+                last_pts: gst::ClockTime::NONE,
                 capsfilter: None,
             })),
         }
@@ -144,7 +144,7 @@ impl VideoOutput {
         let ghost = match fallback_image {
             "" => {
                 let vsrc = make_element("videotestsrc", None)?;
-                vsrc.set_property("is-live", &true).unwrap();
+                vsrc.set_property("is-live", &true);
                 vsrc.set_property_from_str("pattern", "black");
 
                 bin.add(&vsrc)?;
@@ -157,8 +157,8 @@ impl VideoOutput {
                 let vconv = make_element("videoconvert", None)?;
                 let imagefreeze = make_element("imagefreeze", None)?;
 
-                filesrc.set_property("location", fallback_image).unwrap();
-                imagefreeze.set_property("is-live", &true).unwrap();
+                filesrc.set_property("location", fallback_image);
+                imagefreeze.set_property("is-live", &true);
 
                 bin.add_many(&[&filesrc, &decodebin, &imagefreeze, &vconv])?;
 
@@ -191,19 +191,15 @@ impl VideoOutput {
         agg: &gst_base::Aggregator,
         base_plate_pad: &gst::Pad,
         id: &str,
-        duration: gst::ClockTime,
+        duration: Option<gst::ClockTime>,
         controllers: &mut HashMap<String, SettingController>,
         capsfilter: &Option<gst::Element>,
     ) -> HashMap<String, SettingController> {
         let now = get_now();
         let mut updated_controllers = HashMap::new();
-        let mut caps = capsfilter.as_ref().map(|capsfilter| {
-            capsfilter
-                .property("caps")
-                .unwrap()
-                .get::<gst::Caps>()
-                .unwrap()
-        });
+        let mut caps = capsfilter
+            .as_ref()
+            .map(|capsfilter| capsfilter.property::<gst::Caps>("caps"));
 
         for (id, mut controller) in controllers.drain() {
             let setting = controller.setting.clone();
@@ -215,17 +211,17 @@ impl VideoOutput {
                 if id == "width" {
                     let width = setting.lock().unwrap().as_i32().unwrap();
                     caps.make_mut().set_simple(&[("width", &width)]);
-                    base_plate_pad.set_property("width", &width).unwrap();
+                    base_plate_pad.set_property("width", &width);
                 } else if id == "height" {
                     let height = setting.lock().unwrap().as_i32().unwrap();
                     caps.make_mut().set_simple(&[("height", &height)]);
-                    base_plate_pad.set_property("height", &height).unwrap();
+                    base_plate_pad.set_property("height", &height);
                 }
             }
         }
 
         if let Some(capsfilter) = capsfilter {
-            capsfilter.set_property("caps", &caps.unwrap()).unwrap();
+            capsfilter.set_property("caps", &caps.unwrap());
         }
 
         updated_controllers
@@ -263,27 +259,27 @@ impl VideoOutput {
 
         if base_plate_only {
             if mixing_state.base_plate_timeout.is_none() {
-                mixing_state.base_plate_timeout = pts;
+                mixing_state.base_plate_timeout = Some(pts);
             } else if !mixing_state.showing_base_plate
-                && pts - mixing_state.base_plate_timeout > timeout
+                && pts - mixing_state.base_plate_timeout.unwrap() > timeout
             {
                 debug!("falling back to base plate {:?}", base_plate_pad);
-                base_plate_pad.set_property("alpha", &1.0f64).unwrap();
+                base_plate_pad.set_property("alpha", &1.0f64);
                 mixing_state.showing_base_plate = true;
             }
         } else {
             if mixing_state.showing_base_plate {
                 debug!("hiding base plate: {:?}", base_plate_pad);
-                base_plate_pad.set_property("alpha", &0.0f64).unwrap();
+                base_plate_pad.set_property("alpha", &0.0f64);
                 mixing_state.showing_base_plate = false;
             }
-            mixing_state.base_plate_timeout = gst::CLOCK_TIME_NONE;
+            mixing_state.base_plate_timeout = gst::ClockTime::NONE;
         }
 
         let duration = if mixing_state.last_pts.is_none() {
-            gst::CLOCK_TIME_NONE
+            gst::ClockTime::NONE
         } else {
-            pts - mixing_state.last_pts
+            Some(pts - mixing_state.last_pts.unwrap())
         };
 
         mixing_state.slot_controllers = Some(Mixer::synchronize_slot_controllers(
@@ -302,7 +298,7 @@ impl VideoOutput {
             &mixing_state.capsfilter,
         ));
 
-        mixing_state.last_pts = pts;
+        mixing_state.last_pts = Some(pts);
     }
 
     /// Fill the pipeline for this output branch
@@ -327,33 +323,27 @@ impl VideoOutput {
         self.output
             .mixer
             .set_property_from_str("background", "black");
+        self.output.mixer.set_property(
+            "start-time-selection",
+            &gst_base::AggregatorStartTimeSelection::First,
+        );
         self.output
             .mixer
-            .set_property(
-                "start-time-selection",
-                &gst_base::AggregatorStartTimeSelection::First,
-            )
-            .unwrap();
-        self.output
-            .mixer
-            .set_property("ignore-inactive-pads", &true)
-            .unwrap();
+            .set_property("ignore-inactive-pads", &true);
 
-        vcapsfilter
-            .set_property(
-                "caps",
-                &gst::Caps::builder("video/x-raw")
-                    .field("width", &width)
-                    .field("height", &height)
-                    .field("framerate", &gst::Fraction::new(30, 1))
-                    .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
-                    .field("format", &"AYUV")
-                    .field("colorimetry", &"bt601")
-                    .field("chroma-site", &"jpeg")
-                    .field("interlace-mode", &"progressive")
-                    .build(),
-            )
-            .unwrap();
+        vcapsfilter.set_property(
+            "caps",
+            &gst::Caps::builder("video/x-raw")
+                .field("width", &width)
+                .field("height", &height)
+                .field("framerate", &gst::Fraction::new(30, 1))
+                .field("pixel-aspect-ratio", &gst::Fraction::new(1, 1))
+                .field("format", &"AYUV")
+                .field("colorimetry", &"bt601")
+                .field("chroma-site", &"jpeg")
+                .field("interlace-mode", &"progressive")
+                .build(),
+        );
 
         pipeline.add_many(&[&vsrc, &vqueue, &self.output.mixer, &vcapsfilter])?;
 
@@ -372,20 +362,17 @@ impl VideoOutput {
 
         let base_plate_pad = self.output.mixer.static_pad("sink_0").unwrap();
 
-        base_plate_pad.set_property("alpha", &0.0f64).unwrap();
-        base_plate_pad.set_property("width", &width).unwrap();
-        base_plate_pad.set_property("height", &height).unwrap();
+        base_plate_pad.set_property("alpha", &0.0f64);
+        base_plate_pad.set_property("width", &width);
+        base_plate_pad.set_property("height", &height);
         base_plate_pad.set_property_from_str("sizing-policy", "keep-aspect-ratio");
 
         let mixing_state = self.mixing_state.clone();
         mixing_state.lock().unwrap().capsfilter = Some(vcapsfilter);
         let id = self.output.id.clone();
-        let timeout = timeout as u64 * gst::MSECOND;
+        let timeout = timeout as u64 * gst::ClockTime::MSECOND;
 
-        self.output
-            .mixer
-            .set_property("emit-signals", &true)
-            .unwrap();
+        self.output.mixer.set_property("emit-signals", &true);
         self.output
             .mixer
             .downcast_ref::<gst_base::Aggregator>()
@@ -393,7 +380,7 @@ impl VideoOutput {
             .connect_samples_selected(
                 move |agg: &gst_base::Aggregator, _segment, pts, _dts, _duration, _info| {
                     let mut mixing_state = mixing_state.lock().unwrap();
-                    Self::update_mixing_state(agg, &id, pts, &mut *mixing_state, timeout);
+                    Self::update_mixing_state(agg, &id, pts.unwrap(), &mut *mixing_state, timeout);
                 },
             );
 
@@ -424,7 +411,7 @@ impl AudioOutput {
             },
             mixing_state: Arc::new(Mutex::new(AudioMixingState {
                 slot_controllers: Some(HashMap::new()),
-                last_pts: gst::CLOCK_TIME_NONE,
+                last_pts: gst::ClockTime::NONE,
             })),
         }
     }
@@ -438,9 +425,9 @@ impl AudioOutput {
         mixing_state: &mut AudioMixingState,
     ) {
         let duration = if mixing_state.last_pts.is_none() {
-            gst::CLOCK_TIME_NONE
+            gst::ClockTime::NONE
         } else {
-            pts - mixing_state.last_pts
+            Some(pts - mixing_state.last_pts.unwrap())
         };
 
         mixing_state.slot_controllers = Some(Mixer::synchronize_slot_controllers(
@@ -450,7 +437,7 @@ impl AudioOutput {
             &mut mixing_state.slot_controllers.take().unwrap(),
         ));
 
-        mixing_state.last_pts = pts;
+        mixing_state.last_pts = Some(pts);
     }
 
     /// Fill the pipeline for this output branch
@@ -469,50 +456,40 @@ impl AudioOutput {
         let aresample = make_element("audioresample", None)?;
         let aresamplecapsfilter = make_element("capsfilter", None)?;
 
-        asrc.set_property("is-live", &true).unwrap();
-        asrc.set_property("volume", &0.).unwrap();
+        asrc.set_property("is-live", true);
+        asrc.set_property("volume", 0f64);
+        self.output.mixer.set_property(
+            "start-time-selection",
+            &gst_base::AggregatorStartTimeSelection::First,
+        );
         self.output
             .mixer
-            .set_property(
-                "start-time-selection",
-                &gst_base::AggregatorStartTimeSelection::First,
-            )
-            .unwrap();
-        self.output
-            .mixer
-            .set_property("ignore-inactive-pads", &true)
-            .unwrap();
+            .set_property("ignore-inactive-pads", &true);
 
-        asrccapsfilter
-            .set_property(
-                "caps",
-                &gst::Caps::builder("audio/x-raw")
-                    .field("channels", &2)
-                    .field("format", &"S16LE")
-                    .field("rate", &sample_rate)
-                    .build(),
-            )
-            .unwrap();
+        asrccapsfilter.set_property(
+            "caps",
+            &gst::Caps::builder("audio/x-raw")
+                .field("channels", 2i32)
+                .field("format", &"S16LE")
+                .field("rate", &sample_rate)
+                .build(),
+        );
 
-        acapsfilter
-            .set_property(
-                "caps",
-                &gst::Caps::builder("audio/x-raw")
-                    .field("channels", &2)
-                    .field("format", &"S16LE")
-                    .field("rate", &sample_rate)
-                    .build(),
-            )
-            .unwrap();
+        acapsfilter.set_property(
+            "caps",
+            &gst::Caps::builder("audio/x-raw")
+                .field("channels", 2i32)
+                .field("format", &"S16LE")
+                .field("rate", &sample_rate)
+                .build(),
+        );
 
-        aresamplecapsfilter
-            .set_property(
-                "caps",
-                &gst::Caps::builder("audio/x-raw")
-                    .field("rate", &sample_rate)
-                    .build(),
-            )
-            .unwrap();
+        aresamplecapsfilter.set_property(
+            "caps",
+            &gst::Caps::builder("audio/x-raw")
+                .field("rate", &sample_rate)
+                .build(),
+        );
 
         pipeline.add_many(&[
             &asrc,
@@ -544,10 +521,7 @@ impl AudioOutput {
         let mixing_state = self.mixing_state.clone();
         let id = self.output.id.clone();
 
-        self.output
-            .mixer
-            .set_property("emit-signals", &true)
-            .unwrap();
+        self.output.mixer.set_property("emit-signals", &true);
         self.output
             .mixer
             .downcast_ref::<gst_base::Aggregator>()
@@ -555,7 +529,7 @@ impl AudioOutput {
             .connect_samples_selected(
                 move |agg: &gst_base::Aggregator, _segment, pts, _dts, _duration, _info| {
                     let mut mixing_state = mixing_state.lock().unwrap();
-                    Self::update_mixing_state(agg, &id, pts, &mut *mixing_state);
+                    Self::update_mixing_state(agg, &id, pts.unwrap(), &mut *mixing_state);
                 },
             );
 
@@ -803,7 +777,7 @@ impl Mixer {
                 "video" => Ok((true, split[1])),
                 "audio" => Ok((false, split[1])),
                 _ => Err(anyhow!(
-                    "Slot controller property media type must be one of {audio, video}"
+                    "Slot controller property media type must be one of [audio, video]"
                 )),
             },
             _ => Err(anyhow!(
@@ -856,16 +830,14 @@ impl Mixer {
             let queue = make_element("queue", None)?;
             let appsrc_elem: &gst::Element = slot.appsrc.upcast_ref();
 
-            capsfilter
-                .set_property(
-                    "caps",
-                    &gst::Caps::builder("audio/x-raw")
-                        .field("channels", &2)
-                        .field("format", &"S16LE")
-                        .field("rate", &sample_rate)
-                        .build(),
-                )
-                .unwrap();
+            capsfilter.set_property(
+                "caps",
+                &gst::Caps::builder("audio/x-raw")
+                    .field("channels", 2i32)
+                    .field("format", &"S16LE")
+                    .field("rate", &sample_rate)
+                    .build(),
+            );
 
             bin.add_many(&[appsrc_elem, &conv, &resample, &capsfilter, &queue])?;
             pipeline.add(&bin)?;
@@ -875,7 +847,7 @@ impl Mixer {
                 gst::GhostPad::with_target(Some("src"), &queue.static_pad("src").unwrap()).unwrap();
             bin.add_pad(&ghost).unwrap();
 
-            slot.pad.set_property("volume", &volume).unwrap();
+            slot.pad.set_property("volume", &volume);
 
             gst::Element::link_many(&[appsrc_elem, &conv, &resample, &capsfilter, &queue])?;
             let srcpad = bin.static_pad("src").unwrap();
@@ -897,7 +869,7 @@ impl Mixer {
     fn synchronize_slot_controllers(
         agg: &gst_base::Aggregator,
         id: &str,
-        duration: gst::ClockTime,
+        duration: Option<gst::ClockTime>,
         controllers: &mut HashMap<String, PropertyController>,
     ) -> HashMap<String, PropertyController> {
         let now = get_now();

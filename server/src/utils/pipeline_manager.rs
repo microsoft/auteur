@@ -182,8 +182,8 @@ impl PipelineManager {
         let (eos_sender, eos_receiver) = oneshot::channel::<()>();
 
         pipeline.use_clock(Some(&gst::SystemClock::obtain()));
-        pipeline.set_start_time(gst::CLOCK_TIME_NONE);
-        pipeline.set_base_time(gst::ClockTime::from(0));
+        pipeline.set_start_time(gst::ClockTime::NONE);
+        pipeline.set_base_time(gst::ClockTime::from_nseconds(0));
 
         Self {
             pipeline,

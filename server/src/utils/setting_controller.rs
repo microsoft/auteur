@@ -109,7 +109,7 @@ impl SettingController {
     ///
     /// This function returns whether control points are still pending
     #[instrument(level = "trace", name = "synchronizing controller", skip(self), fields(id = %self.controllee_id, setting = %self.setting.lock().unwrap().name))]
-    pub fn synchronize(&mut self, now: DateTime<Utc>, duration: gst::ClockTime) -> bool {
+    pub fn synchronize(&mut self, now: DateTime<Utc>, duration: Option<gst::ClockTime>) -> bool {
         let mut control_points = self.control_points.take().unwrap();
         let mut setting = self.setting.lock().unwrap();
 
@@ -122,18 +122,19 @@ impl SettingController {
             };
 
             if match point.mode {
-                ControlMode::Interpolate => match duration {
-                    gst::CLOCK_TIME_NONE => false,
-                    _ => {
+                ControlMode::Interpolate => {
+                    if let Some(duration) = duration {
                         do_trace = true;
                         SettingController::interpolate(
                             &mut setting,
                             now,
-                            duration.nseconds().unwrap(),
+                            duration.nseconds(),
                             point,
                         )
+                    } else {
+                        false
                     }
-                },
+                }
                 ControlMode::Set => SettingController::set(&mut setting, now, point),
             } {
                 do_trace = true;
