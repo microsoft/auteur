@@ -19,8 +19,8 @@ if __name__ == '__main__':
         'sample-rate': 44100
     })
     create_local_playback_destination('centricular-output')
-    start_node('centricular-output')
     connect('channel-1', 'centricular-output')
+    start_node('centricular-output')
     start_node('channel-1')
 
     source_slot = schedule_source(source_uri, 'source_slot', 'channel-1', later(0), later(10),
@@ -55,4 +55,8 @@ if __name__ == '__main__':
     add_control_point('control-1', dest_slot, 'audio::volume', later(5), 0.0, interpolate=False)
     add_control_point('control-2', dest_slot, 'audio::volume', later(10), 1.0)
 
-    get_info('channel-1')
+    import time
+
+    time.sleep(2)
+
+    get_info()
