@@ -130,9 +130,7 @@ impl Destination {
         };
 
         for appsrc in [&video_appsrc, &audio_appsrc].iter().copied().flatten() {
-            appsrc.set_format(gst::Format::Time);
-            appsrc.set_is_live(true);
-            appsrc.set_handle_segment_change(true);
+            gst_utils::StreamProducer::configure_consumer(appsrc);
         }
 
         let pipeline = gst::Pipeline::new(None);

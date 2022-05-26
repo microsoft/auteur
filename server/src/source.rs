@@ -125,7 +125,7 @@ impl Source {
 
                 pipeline.add(&deinterlace)?;
 
-                let appsink: &gst::Element = video_producer.appsink().upcast_ref();
+                let appsink = video_producer.appsink();
 
                 debug!(appsink = %appsink.name(), "linking video stream");
 
@@ -133,9 +133,9 @@ impl Source {
 
                 let sinkpad = deinterlace.static_pad("sink").unwrap();
                 pad.link(&sinkpad)?;
-                deinterlace.link(appsink)?;
+                deinterlace.link(&appsink)?;
 
-                Ok(Some(appsink.clone()))
+                Ok(Some(appsink.upcast()))
             } else {
                 Ok(None)
             }
@@ -145,19 +145,19 @@ impl Source {
 
             pipeline.add_many(&[&aconv, &level])?;
 
-            let appsink: &gst::Element = audio_producer.appsink().upcast_ref();
+            let appsink = audio_producer.appsink();
 
             debug!(appsink = %appsink.name(), "linking audio stream to appsink");
 
             aconv.sync_state_with_parent()?;
             level.sync_state_with_parent()?;
 
-            gst::Element::link_many(&[&aconv, &level, appsink])?;
+            gst::Element::link_many(&[&aconv, &level, appsink.upcast_ref()])?;
 
             let sinkpad = aconv.static_pad("sink").unwrap();
             pad.link(&sinkpad)?;
 
-            Ok(Some(appsink.clone()))
+            Ok(Some(appsink.upcast()))
         } else {
             Ok(None)
         }
