@@ -573,7 +573,7 @@ impl Actor for Mixer {
     #[instrument(level = "debug", name = "stopped", skip(self, _ctx), fields(id = %self.id))]
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         if let Some(manager) = self.pipeline_manager.take() {
-            let _ = manager.do_send(StopManagerMessage);
+            manager.do_send(StopManagerMessage);
         }
 
         for (id, slot) in self.consumer_slots.drain() {
@@ -922,7 +922,7 @@ impl Mixer {
         let id = self.id.clone();
         self.pipeline.call_async(move |pipeline| {
             if let Err(err) = pipeline.set_state(gst::State::Playing) {
-                let _ = addr.do_send(ErrorMessage(format!(
+                addr.do_send(ErrorMessage(format!(
                     "Failed to start mixer {}: {}",
                     id, err
                 )));

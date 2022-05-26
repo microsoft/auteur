@@ -308,7 +308,7 @@ impl Node {
             Node::Destination(addr) => addr.clone().recipient(),
             Node::Mixer(addr) => addr.clone().recipient(),
         };
-        let _ = recipient.do_send(StopMessage);
+        recipient.do_send(StopMessage);
     }
 
     /// Get node-specific info
@@ -352,7 +352,7 @@ impl Node {
             Node::Destination(addr) => addr.clone().recipient(),
             Node::Mixer(addr) => addr.clone().recipient(),
         };
-        let _ = recipient.do_send(msg);
+        recipient.do_send(msg);
     }
 }
 
@@ -488,7 +488,7 @@ impl NodeManager {
 
     /// Tell a node to disconnect one of its consumer slots
     fn disconnect_consumer(&self, consumer: &mut Recipient<ConsumerMessage>, slot_id: String) {
-        let _ = consumer.do_send(ConsumerMessage::Disconnect { slot_id });
+        consumer.do_send(ConsumerMessage::Disconnect { slot_id });
     }
 
     /// Look up all consumers for a given producer and tell them to disconnect
@@ -802,7 +802,7 @@ impl NodeManager {
         property: &str,
     ) -> CommandResult {
         if let Some(consumer) = self.links.get(controllee_id) {
-            let _ = consumer.do_send(ConsumerMessage::RemoveControlPoint {
+            consumer.do_send(ConsumerMessage::RemoveControlPoint {
                 controller_id: id.to_string(),
                 slot_id: controllee_id.to_string(),
                 property: property.to_string(),
@@ -837,7 +837,7 @@ impl NodeManager {
     fn notify_listeners(&mut self, message: NodeStatusMessage) {
         self.listeners.retain(|_id, recipient| {
             if let Some(recipient) = recipient.upgrade() {
-                let _ = recipient.do_send(message.clone());
+                recipient.do_send(message.clone());
                 true
             } else {
                 false

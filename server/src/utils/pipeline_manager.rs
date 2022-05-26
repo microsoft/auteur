@@ -126,7 +126,7 @@ impl StreamHandler<BusMessage> for PipelineManager {
                     let err = err.error();
 
                     if let Some(dbg) = dbg {
-                        let _ = recipient.do_send(ErrorMessage(format!(
+                        recipient.do_send(ErrorMessage(format!(
                             "Got error from {}: {} ({})",
                             src.as_ref()
                                 .map(|src| src.path_string())
@@ -136,7 +136,7 @@ impl StreamHandler<BusMessage> for PipelineManager {
                             dbg
                         )));
                     } else {
-                        let _ = recipient.do_send(ErrorMessage(format!(
+                        recipient.do_send(ErrorMessage(format!(
                             "Got error from {}: {}",
                             src.as_ref()
                                 .map(|src| src.path_string())
