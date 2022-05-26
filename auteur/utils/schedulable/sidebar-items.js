@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["StateChangeResult","Controls how to schedule future state changes after a successful transtion"]],"struct":[["StateMachine","State machine governing the progression of a `node` state along a timeline"]],"trait":[["Schedulable","(`Nodes`)[crate::node] should implement this trait in order to drive their state progression."]]});

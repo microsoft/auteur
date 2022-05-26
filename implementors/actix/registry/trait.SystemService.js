@@ -1,0 +1,3 @@
+(function() {var implementors = {};
+implementors["auteur"] = [{"text":"impl SystemService for <a class=\"struct\" href=\"auteur/node/struct.NodeManager.html\" title=\"struct auteur::node::NodeManager\">NodeManager</a>","synthetic":false,"types":["auteur::node::NodeManager"]}];
+if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()

@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["PropertyController","Represents a controller for a property"]]});

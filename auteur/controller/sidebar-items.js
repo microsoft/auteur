@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["Controller","Actor that represents an application controller."],["ErrorMessage","Sent from [`Controller` to itself to notify the remote controller of an error."]]});

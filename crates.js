@@ -1,0 +1,1 @@
+window.ALL_CRATES = ["auteur","auteur_controller","auteur_controlling"];

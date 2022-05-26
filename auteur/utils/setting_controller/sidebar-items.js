@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["SettingSpec","Specifies a setting typology (type, valid range)"]],"struct":[["Setting","Represents a (potentially controllable) “native” setting for a node."],["SettingController","Represents a controller for a setting"]]});

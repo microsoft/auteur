@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["StreamProducer","Wrapper around `gst_utils::StreamProducer`, additionally keeping track of consumer ids"],["StreamProducerInner",""]]});

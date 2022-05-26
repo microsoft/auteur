@@ -1,0 +1,3 @@
+(function() {var implementors = {};
+implementors["auteur_controlling"] = [{"text":"impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.61.0/core/cmp/trait.Ord.html\" title=\"trait core::cmp::Ord\">Ord</a> for <a class=\"struct\" href=\"auteur_controlling/controller/struct.ControlPoint.html\" title=\"struct auteur_controlling::controller::ControlPoint\">ControlPoint</a>","synthetic":false,"types":["auteur_controlling::controller::ControlPoint"]}];
+if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
