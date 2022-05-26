@@ -61,13 +61,13 @@ RUN apt-get update && \
       libfdk-aac-dev && \
       python3 -m pip install meson --upgrade
 
-RUN git clone https://gitlab.freedesktop.org/gstreamer/gst-build.git && \
-    cd gst-build && \
+RUN git clone https://gitlab.freedesktop.org/gstreamer/gstreamer.git && \
+    cd gstreamer && \
     meson build --prefix=/usr && \
     ninja -C build && \
     ninja -C build install && \
     cd .. && \
-    rm -rf gst-build
+    rm -rf gstreamer
 
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 
