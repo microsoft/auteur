@@ -164,7 +164,7 @@ where
 
     fn update_state(&mut self, state: State) {
         self.state_machine_mut().state = state;
-        let _ = NodeManager::from_registry().do_send(NodeStatusMessage::State {
+        NodeManager::from_registry().do_send(NodeStatusMessage::State {
             id: self.node_id().to_string(),
             state,
         });

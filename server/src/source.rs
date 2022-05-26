@@ -230,13 +230,13 @@ impl Source {
 
         let addr_clone = ctx.address();
         src.connect("notify::status", false, move |_args| {
-            let _ = addr_clone.do_send(SourceStatusMessage);
+            addr_clone.do_send(SourceStatusMessage);
             None
         });
 
         let addr_clone = ctx.address();
         src.connect("notify::statistics", false, move |_args| {
-            let _ = addr_clone.do_send(SourceStatusMessage);
+            addr_clone.do_send(SourceStatusMessage);
             None
         });
 
@@ -245,11 +245,11 @@ impl Source {
         let addr = ctx.address();
         src_bin.connect_deep_element_added(move |_src, _bin, element| {
             if element.has_property("primary-health", None) {
-                let _ = addr.do_send(NewSwitchMessage(element.clone()));
+                addr.do_send(NewSwitchMessage(element.clone()));
             }
 
             if element.type_().name() == "GstURISourceBin" {
-                let _ = addr.do_send(NewSourceBinMessage(element.clone()));
+                addr.do_send(NewSourceBinMessage(element.clone()));
             }
         });
 
@@ -273,7 +273,7 @@ impl Source {
         let id = self.id.clone();
 
         if let Err(err) = pipeline.set_state(gst::State::Playing) {
-            let _ = addr.do_send(ErrorMessage(format!(
+            addr.do_send(ErrorMessage(format!(
                 "Failed to start source {}: {}",
                 id, err
             )));
@@ -341,13 +341,13 @@ impl Source {
         if let Some(ref mut media) = self.media {
             let addr_clone = ctx.address();
             switch.connect("notify::primary-health", false, move |_args| {
-                let _ = addr_clone.do_send(SourceStatusMessage);
+                addr_clone.do_send(SourceStatusMessage);
                 None
             });
 
             let addr_clone = ctx.address();
             switch.connect("notify::fallback-health", false, move |_args| {
-                let _ = addr_clone.do_send(SourceStatusMessage);
+                addr_clone.do_send(SourceStatusMessage);
                 None
             });
 
@@ -411,7 +411,7 @@ impl Source {
                     .unwrap();
             }
 
-            let _ = media.pipeline_manager.do_send(StopManagerMessage);
+            media.pipeline_manager.do_send(StopManagerMessage);
         }
 
         Ok(StateChangeResult::Success)
@@ -433,7 +433,7 @@ impl Actor for Source {
     #[instrument(level = "debug", name = "stopping", skip(self, _ctx), fields(id = %self.id))]
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         if let Some(media) = self.media.take() {
-            let _ = media.pipeline_manager.do_send(StopManagerMessage);
+            media.pipeline_manager.do_send(StopManagerMessage);
         }
 
         NodeManager::from_registry().do_send(StoppedMessage {
