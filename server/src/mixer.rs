@@ -1016,9 +1016,7 @@ impl Mixer {
         }
 
         for slot in [&video_slot, &audio_slot].iter().copied().flatten() {
-            slot.appsrc.set_format(gst::Format::Time);
-            slot.appsrc.set_is_live(true);
-            slot.appsrc.set_handle_segment_change(true);
+            gst_utils::StreamProducer::configure_consumer(&slot.appsrc);
         }
 
         let mut slot = ConsumerSlot {

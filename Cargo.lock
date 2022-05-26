@@ -353,6 +353,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "gstreamer-base",
+ "gstreamer-utils",
  "gstreamer-video",
  "openssl",
  "priority-queue",
@@ -1035,6 +1036,18 @@ dependencies = [
  "gobject-sys 0.16.0",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "gstreamer-utils"
+version = "0.19.0"
+source = "git+https://gitlab.freedesktop.org/gstreamer/gstreamer-rs#50f3eee8ebd85a1d71c83e317383e070201e8695"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-video",
+ "once_cell",
+ "thiserror",
 ]
 
 [[package]]
@@ -1999,7 +2012,8 @@ dependencies = [
 [[package]]
 name = "tracing-actix"
 version = "0.4.0"
-source = "git+https://github.com/MathieuDuponchelle/tracing-actix.git?branch=actix-0.13#1722abd361f88b19e6ec26aeb97802a5d007ae28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c817336e87c6e0c86d1fc220be24ebfb18ad3f3a14d80c0ca8bdba9f3ea261e7"
 dependencies = [
  "actix",
  "futures",
