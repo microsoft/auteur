@@ -14,7 +14,7 @@ gst-video = { package = "gstreamer-video", git = "https://gitlab.freedesktop.org
 gst-utils = { package = "gstreamer-utils", git="https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
 glib = "0.15"
 futures = "0.3"
-tokio = { version = "1.6.1", features = ["time", "test-util"] }
+tokio = { version = "1.18.4", features = ["time", "test-util"] }
 actix = "0.13"
 actix-rt = "2"
 actix-web = { version = "4", features = ["openssl"] }
