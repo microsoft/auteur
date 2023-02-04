@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 futures = "0.3"
-tokio = { version = "1.0", features = ["signal", "rt"] }
+tokio = { version = "1.18", features = ["signal", "rt"] }
 clap = { version = "3", features = ["derive"] }
 async-tungstenite = { version = "0.17", features = ["tokio-runtime", "tokio-openssl"] }
 serde_json = "1"
